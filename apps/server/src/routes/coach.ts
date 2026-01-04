@@ -56,6 +56,99 @@ coachRouter.post("/coach/signup", (req, res) => {
   return res.json(user);
 });
 
+coachRouter.get("/coach/signup", (_req, res) => {
+  return res
+    .type("html")
+    .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spanish Coach Signup</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 32px;
+        color: #111827;
+        background: #f9fafb;
+      }
+      main {
+        max-width: 520px;
+        margin: 0 auto;
+        background: #fff;
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        font-size: 24px;
+        margin-bottom: 8px;
+      }
+      p {
+        color: #4b5563;
+        margin-bottom: 24px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        font-size: 14px;
+      }
+      button {
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        background: #2563eb;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      small {
+        display: block;
+        margin-top: 8px;
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Spanish Coach Signup</h1>
+      <p>Fill this out to opt into the daily coach call. Times are local to your timezone.</p>
+      <form method="post" action="/coach/signup">
+        <label for="phone">Phone (E.164)</label>
+        <input id="phone" name="phone" placeholder="+15555550123" required />
+
+        <label for="name">Name (optional)</label>
+        <input id="name" name="name" placeholder="Ava" />
+
+        <label for="preferredCallTime">Preferred call time (HH:MM)</label>
+        <input id="preferredCallTime" name="preferredCallTime" placeholder="08:30" required />
+
+        <label for="timezone">Timezone</label>
+        <input id="timezone" name="timezone" value="America/Phoenix" required />
+
+        <label for="duolingoUnit">Duolingo unit (optional)</label>
+        <input id="duolingoUnit" name="duolingoUnit" placeholder="Unit 4" />
+
+        <button type="submit">Sign up</button>
+        <small>This posts to the JSON API at <code>/coach/signup</code>.</small>
+      </form>
+    </main>
+  </body>
+</html>`);
+});
+
 coachRouter.post("/coach/optout", (req, res) => {
   const parsed = z.object({ phone: phoneSchema }).safeParse(req.body);
   if (!parsed.success) {
