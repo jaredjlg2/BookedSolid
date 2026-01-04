@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "module";
 import { env } from "../config/env";
 
 export type LevelEstimate = "A0" | "A1" | "A2" | "B1";
@@ -21,7 +21,19 @@ export interface CoachUser {
   updated_at: string;
 }
 
-let db: DatabaseSync | null = null;
+const require = createRequire(import.meta.url);
+
+type Statement = {
+  get: (...params: unknown[]) => unknown;
+  run: (...params: unknown[]) => unknown;
+};
+
+type DatabaseHandle = {
+  exec: (sql: string) => void;
+  prepare: (sql: string) => Statement;
+};
+
+let db: DatabaseHandle | null = null;
 
 function ensureDbPath(dbPath: string) {
   const dir = path.dirname(dbPath);
@@ -30,18 +42,40 @@ function ensureDbPath(dbPath: string) {
   }
 }
 
-export function getDb(): DatabaseSync {
+export function getDb(): DatabaseHandle {
   if (!db) {
     const dbPath = env.DB_PATH ?? path.join(process.cwd(), "data", "coach.sqlite");
     ensureDbPath(dbPath);
-    db = new DatabaseSync(dbPath);
+    db = loadDatabaseDriver().create(dbPath);
     db.exec("PRAGMA journal_mode = WAL;");
     initializeCoachDb(db);
   }
   return db;
 }
 
-function initializeCoachDb(database: DatabaseSync) {
+function loadDatabaseDriver(): { create: (dbPath: string) => DatabaseHandle } {
+  try {
+    const sqliteModule = require("node:sqlite") as {
+      DatabaseSync: new (dbPath: string) => DatabaseHandle;
+    };
+    return { create: (dbPath) => new sqliteModule.DatabaseSync(dbPath) };
+  } catch (error) {
+    try {
+      const BetterSqlite3 = require("better-sqlite3") as new (dbPath: string) => DatabaseHandle;
+      return { create: (dbPath) => new BetterSqlite3(dbPath) };
+    } catch (fallbackError) {
+      const reasons = [
+        error instanceof Error ? error.message : String(error),
+        fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+      ].join(" | ");
+      throw new Error(
+        `SQLite driver not available. Install "better-sqlite3" or upgrade to Node 22+ to use node:sqlite. (${reasons})`
+      );
+    }
+  }
+}
+
+function initializeCoachDb(database: DatabaseHandle) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
