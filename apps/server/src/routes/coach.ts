@@ -65,8 +65,23 @@ coachRouter.post("/coach/call-now", async (req, res) => {
     return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
   }
 
-  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN || !env.PUBLIC_BASE_URL) {
-    return res.status(500).json({ error: "Twilio is not configured" });
+  const twilioConfigured = Boolean(
+    env.TWILIO_ACCOUNT_SID &&
+      env.TWILIO_AUTH_TOKEN &&
+      env.PUBLIC_BASE_URL &&
+      (env.TWILIO_FROM_NUMBER ?? env.TWILIO_PHONE_NUMBER)
+  );
+
+  if (!twilioConfigured) {
+    return res.status(503).json({
+      error: "Twilio is not configured",
+      missing: {
+        TWILIO_ACCOUNT_SID: !env.TWILIO_ACCOUNT_SID,
+        TWILIO_AUTH_TOKEN: !env.TWILIO_AUTH_TOKEN,
+        PUBLIC_BASE_URL: !env.PUBLIC_BASE_URL,
+        TWILIO_FROM_NUMBER: !(env.TWILIO_FROM_NUMBER ?? env.TWILIO_PHONE_NUMBER),
+      },
+    });
   }
 
   const [hour, minute] = parsed.data.preferredCallTime.split(":").map(Number);
@@ -96,6 +111,19 @@ coachRouter.post("/coach/call-now", async (req, res) => {
 });
 
 coachRouter.get("/coach/signup", (_req, res) => {
+  const twilioConfigured = Boolean(
+    env.TWILIO_ACCOUNT_SID &&
+      env.TWILIO_AUTH_TOKEN &&
+      env.PUBLIC_BASE_URL &&
+      (env.TWILIO_FROM_NUMBER ?? env.TWILIO_PHONE_NUMBER)
+  );
+  const callNowNotice = twilioConfigured
+    ? ""
+    : `<div class="callout warning">
+        “Call me now” is disabled until Twilio is configured. Set
+        <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>,
+        <code>TWILIO_FROM_NUMBER</code>, and <code>PUBLIC_BASE_URL</code>.
+      </div>`;
   return res
     .type("html")
     .send(`<!doctype html>
@@ -172,6 +200,10 @@ coachRouter.get("/coach/signup", (_req, res) => {
         color: #1e3a8a;
         font-size: 14px;
       }
+      .callout.warning {
+        background: #fef3c7;
+        color: #92400e;
+      }
       .button-row {
         display: grid;
         gap: 10px;
@@ -187,6 +219,7 @@ coachRouter.get("/coach/signup", (_req, res) => {
         use “Call me now” (the coach will call you) or point a second Twilio number at
         <code>/twilio/coach/voice</code>.
       </div>
+      ${callNowNotice}
       <form method="post" action="/coach/signup">
         <label for="phone">Phone (E.164)</label>
         <input id="phone" name="phone" placeholder="+15555550123" required />
@@ -205,7 +238,9 @@ coachRouter.get("/coach/signup", (_req, res) => {
 
         <div class="button-row">
           <button type="submit">Sign up</button>
-          <button type="submit" class="secondary" formaction="/coach/call-now">Call me now</button>
+          <button type="submit" class="secondary" formaction="/coach/call-now"${
+            twilioConfigured ? "" : " disabled"
+          }>Call me now</button>
         </div>
         <small>These post to the JSON APIs at <code>/coach/signup</code> and <code>/coach/call-now</code>.</small>
       </form>
