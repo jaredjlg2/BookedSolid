@@ -6,7 +6,8 @@ export function connectOpenAIRealtime(): WebSocket {
     throw new Error("OPENAI_API_KEY is missing");
   }
 
-  const url = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+  const model = process.env.OPENAI_REALTIME_MODEL ?? "gpt-4o-realtime-preview";
+  const url = `wss://api.openai.com/v1/realtime?model=${model}`;
 
   const ws = new WebSocket(url, {
     headers: {
