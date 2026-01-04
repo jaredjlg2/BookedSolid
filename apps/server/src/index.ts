@@ -127,7 +127,7 @@ wss.on("connection", (twilioWs) => {
     pendingGreeting = false;
     const instructions =
       mode === "spanish_coach"
-        ? "Start the Spanish coaching call now with a brief greeting in Spanish and your first easy question."
+        ? "Start the Spanish coaching call now with a brief Spanish greeting, then ask one very simple question."
         : "Answer the phone in English with a warm greeting in one short sentence and ask how you can help.";
 
     openaiWs.send(
