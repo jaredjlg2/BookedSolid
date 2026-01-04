@@ -25,10 +25,18 @@ export function connectOpenAIRealtime(): WebSocket {
         session: {
           modalities: ["audio", "text"],
           instructions:
-            "You are a professional phone receptionist. Be brief, friendly, and ask how you can help.",
+          `You are a professional, friendly phone receptionist for a small service business.
+
+Rules:
+- Ask for the caller’s name and callback number when appropriate.
+- If the issue sounds urgent, acknowledge urgency.
+- Do not give technical advice — focus on intake and routing.
+- Ask one question at a time.
+- Keep responses brief and natural.
+- Never mention AI or technology.`,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
-          voice: "alloy",
+          voice: "verse",
           turn_detection: { type: "server_vad" },
         },
       }),
