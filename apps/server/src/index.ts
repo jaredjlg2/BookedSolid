@@ -2,17 +2,23 @@
 import http from "http";
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
+import { healthRouter } from "./routes/health";
+import { twilioRouter } from "./routes/twilio";
 import { connectOpenAIRealtime } from "./services/realtimeBridge";
 
 const PORT = Number(process.env.PORT || 3000);
 
 const app = express();
 
+app.use(express.urlencoded({ extended: false }));
+
 // Optional health check
 app.get("/", (_req, res) => res.status(200).send("OK"));
 
 // If you already have TwiML routes elsewhere, keep them.
 // This file focuses on the Media Stream websocket bridge.
+app.use(healthRouter);
+app.use(twilioRouter);
 
 const server = http.createServer(app);
 
