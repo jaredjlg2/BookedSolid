@@ -5,8 +5,11 @@ import {
   listUsers,
   setUserInactive,
   upsertUser,
+  createCallLog,
+  updateLastCalled,
 } from "../services/coachDb";
 import { runCoachCallsNow } from "../services/coachScheduler";
+import { placeCoachCall } from "../services/coachTwilio";
 
 export const coachRouter = Router();
 
@@ -54,6 +57,42 @@ coachRouter.post("/coach/signup", (req, res) => {
   });
 
   return res.json(user);
+});
+
+coachRouter.post("/coach/call-now", async (req, res) => {
+  const parsed = signupSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+  }
+
+  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN || !env.PUBLIC_BASE_URL) {
+    return res.status(500).json({ error: "Twilio is not configured" });
+  }
+
+  const [hour, minute] = parsed.data.preferredCallTime.split(":").map(Number);
+
+  if (Number.isNaN(hour) || Number.isNaN(minute) || hour > 23 || minute > 59) {
+    return res.status(400).json({ error: "Invalid preferredCallTime" });
+  }
+
+  const user = upsertUser({
+    phone_e164: parsed.data.phone,
+    name: parsed.data.name,
+    timezone: parsed.data.timezone,
+    preferred_call_hour_local: hour,
+    preferred_call_minute_local: minute,
+    duolingo_unit: parsed.data.duolingoUnit,
+  });
+
+  try {
+    const call = await placeCoachCall(user);
+    createCallLog({ user_id: user.id, call_sid: call.sid, outcome: "initiated" });
+    updateLastCalled(user.id);
+    return res.json({ ok: true, callSid: call.sid });
+  } catch (error) {
+    console.error("Failed to place call now", error);
+    return res.status(500).json({ error: "Failed to place call" });
+  }
 });
 
 coachRouter.get("/coach/signup", (_req, res) => {
@@ -111,13 +150,31 @@ coachRouter.get("/coach/signup", (_req, res) => {
         font-weight: 600;
         cursor: pointer;
       }
+      button.secondary {
+        background: #111827;
+      }
       button:hover {
         background: #1d4ed8;
+      }
+      button.secondary:hover {
+        background: #0f172a;
       }
       small {
         display: block;
         margin-top: 8px;
         color: #6b7280;
+      }
+      .callout {
+        background: #eff6ff;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 16px;
+        color: #1e3a8a;
+        font-size: 14px;
+      }
+      .button-row {
+        display: grid;
+        gap: 10px;
       }
     </style>
   </head>
@@ -125,6 +182,11 @@ coachRouter.get("/coach/signup", (_req, res) => {
     <main>
       <h1>Spanish Coach Signup</h1>
       <p>Fill this out to opt into the daily coach call. Times are local to your timezone.</p>
+      <div class="callout">
+        Incoming calls to the main Twilio number go to the receptionist. To reach the Spanish coach,
+        use “Call me now” (the coach will call you) or point a second Twilio number at
+        <code>/twilio/coach/voice</code>.
+      </div>
       <form method="post" action="/coach/signup">
         <label for="phone">Phone (E.164)</label>
         <input id="phone" name="phone" placeholder="+15555550123" required />
@@ -141,8 +203,11 @@ coachRouter.get("/coach/signup", (_req, res) => {
         <label for="duolingoUnit">Duolingo unit (optional)</label>
         <input id="duolingoUnit" name="duolingoUnit" placeholder="Unit 4" />
 
-        <button type="submit">Sign up</button>
-        <small>This posts to the JSON API at <code>/coach/signup</code>.</small>
+        <div class="button-row">
+          <button type="submit">Sign up</button>
+          <button type="submit" class="secondary" formaction="/coach/call-now">Call me now</button>
+        </div>
+        <small>These post to the JSON APIs at <code>/coach/signup</code> and <code>/coach/call-now</code>.</small>
       </form>
     </main>
   </body>
