@@ -65,6 +65,16 @@ export function startCoachScheduler(): void {
     return;
   }
 
+  try {
+    listActiveUsers();
+  } catch (error) {
+    console.log(
+      "Coach scheduler disabled: SQLite driver unavailable. Install better-sqlite3 or upgrade to Node 22+."
+    );
+    console.error(error);
+    return;
+  }
+
   if (schedulerTimer) return;
 
   const run = async () => {
