@@ -1,6 +1,11 @@
 import WebSocket from "ws";
+import { receptionistPrompt } from "../prompts/receptionist";
 
-export function connectOpenAIRealtime(): WebSocket {
+interface RealtimeOptions {
+  instructions?: string;
+}
+
+export function connectOpenAIRealtime(options: RealtimeOptions = {}): WebSocket {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is missing");
@@ -8,6 +13,7 @@ export function connectOpenAIRealtime(): WebSocket {
 
   const model = process.env.OPENAI_REALTIME_MODEL ?? "gpt-4o-realtime-preview";
   const url = `wss://api.openai.com/v1/realtime?model=${model}`;
+  const instructions = options.instructions ?? receptionistPrompt;
 
   const ws = new WebSocket(url, {
     headers: {
@@ -24,23 +30,14 @@ export function connectOpenAIRealtime(): WebSocket {
         type: "session.update",
         session: {
           modalities: ["audio", "text"],
-          instructions:
-          `You are a professional, friendly phone receptionist for a small service business.
-
-Rules:
-- Ask for the caller’s name and callback number when appropriate.
-- If the issue sounds urgent, acknowledge urgency.
-- Do not give technical advice — focus on intake and routing.
-- Ask one question at a time.
-- Keep responses brief and natural.
-- Always respond in English.
-- Never mention AI or technology.`,
+          instructions,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
+          input_audio_transcription: { model: "whisper-1" },
           voice: "verse",
           turn_detection: { type: "server_vad" },
         },
-      }),
+      })
     );
   });
 

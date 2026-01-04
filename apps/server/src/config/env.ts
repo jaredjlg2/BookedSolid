@@ -7,8 +7,14 @@ const EnvSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),
+  TWILIO_FROM_NUMBER: z.string().optional(),
+
+  PUBLIC_BASE_URL: z.string().optional(),
+  COACH_ADMIN_KEY: z.string().optional(),
+  DB_PATH: z.string().optional(),
 
   OPENAI_API_KEY: z.string().optional(),
+  OPENAI_REALTIME_MODEL: z.string().optional(),
 
   // Add these later when you wire scheduling
   GOOGLE_CLIENT_ID: z.string().optional(),
