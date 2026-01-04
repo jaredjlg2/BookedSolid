@@ -1,0 +1,9 @@
+# secrets
+.env
+.env.*
+*.pem
+*.key
+
+# node
+node_modules
+dist
