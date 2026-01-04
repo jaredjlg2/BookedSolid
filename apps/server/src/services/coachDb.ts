@@ -21,7 +21,7 @@ export interface CoachUser {
   updated_at: string;
 }
 
-const require = createRequire(import.meta.url);
+const nodeRequire = createRequire(import.meta.url);
 
 type Statement = {
   get: (...params: unknown[]) => unknown;
@@ -55,13 +55,13 @@ export function getDb(): DatabaseHandle {
 
 function loadDatabaseDriver(): { create: (dbPath: string) => DatabaseHandle } {
   try {
-    const sqliteModule = require("node:sqlite") as {
+    const sqliteModule = nodeRequire("node:sqlite") as {
       DatabaseSync: new (dbPath: string) => DatabaseHandle;
     };
     return { create: (dbPath) => new sqliteModule.DatabaseSync(dbPath) };
   } catch (error) {
     try {
-      const BetterSqlite3 = require("better-sqlite3") as new (dbPath: string) => DatabaseHandle;
+      const BetterSqlite3 = nodeRequire("better-sqlite3") as new (dbPath: string) => DatabaseHandle;
       return { create: (dbPath) => new BetterSqlite3(dbPath) };
     } catch (fallbackError) {
       const reasons = [
