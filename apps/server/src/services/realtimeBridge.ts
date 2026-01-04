@@ -33,6 +33,7 @@ Rules:
 - Do not give technical advice — focus on intake and routing.
 - Ask one question at a time.
 - Keep responses brief and natural.
+- Always respond in English.
 - Never mention AI or technology.`,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
