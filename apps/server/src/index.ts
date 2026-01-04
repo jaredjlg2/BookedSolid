@@ -53,7 +53,7 @@ wss.on("connection", (twilioWs) => {
         response: {
           modalities: ["audio", "text"],
           instructions:
-            "Answer the phone with a warm greeting in one short sentence and ask how you can help.",
+            "Answer the phone in English with a warm greeting in one short sentence and ask how you can help.",
         },
       })
     );
