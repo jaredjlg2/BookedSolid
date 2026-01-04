@@ -1,4 +1,5 @@
 // apps/server/src/index.ts
+import "./config/env";
 import http from "http";
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
