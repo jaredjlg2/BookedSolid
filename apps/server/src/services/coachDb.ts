@@ -21,7 +21,7 @@ export interface CoachUser {
   updated_at: string;
 }
 
-const nodeRequire = createRequire(import.meta.url);
+const nodeRequire = createRequire(__filename);
 
 type Statement = {
   get: (...params: unknown[]) => unknown;
