@@ -36,8 +36,34 @@ wss.on("connection", (twilioWs) => {
   console.log("Twilio Media Stream connected");
 
   let streamSid: string | null = null;
+  let pendingGreeting = false;
 
   const openaiWs = connectOpenAIRealtime();
+
+  const sendGreeting = () => {
+    if (openaiWs.readyState !== WebSocket.OPEN) {
+      pendingGreeting = true;
+      return;
+    }
+
+    pendingGreeting = false;
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions:
+            "Answer the phone with a warm greeting in one short sentence and ask how you can help.",
+        },
+      })
+    );
+  };
+
+  openaiWs.on("open", () => {
+    if (pendingGreeting) {
+      sendGreeting();
+    }
+  });
 
   // --- OpenAI -> Twilio ---
   openaiWs.on("message", (data) => {
@@ -90,18 +116,7 @@ wss.on("connection", (twilioWs) => {
       console.log("Stream start", msg.start);
 
       // ✅ Force assistant to greet immediately (so caller doesn't have to speak first)
-      if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(
-          JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["audio", "text"],
-              instructions:
-                "Answer the phone with a warm greeting in one short sentence and ask how you can help.",
-            },
-          })
-        );
-      }
+      sendGreeting();
 
       return;
     }
