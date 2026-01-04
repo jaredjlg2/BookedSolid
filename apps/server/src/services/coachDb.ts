@@ -25,6 +25,7 @@ const nodeRequire = createRequire(__filename);
 
 type Statement = {
   get: (...params: unknown[]) => unknown;
+  all: (...params: unknown[]) => unknown[];
   run: (...params: unknown[]) => unknown;
 };
 
@@ -34,6 +35,7 @@ type DatabaseHandle = {
 };
 
 let db: DatabaseHandle | null = null;
+let store: CoachStore | null = null;
 
 function ensureDbPath(dbPath: string) {
   const dir = path.dirname(dbPath);
@@ -42,11 +44,58 @@ function ensureDbPath(dbPath: string) {
   }
 }
 
-export function getDb(): DatabaseHandle {
+type CoachStore = {
+  upsertUser: (input: {
+    phone_e164: string;
+    name?: string | null;
+    timezone: string;
+    preferred_call_hour_local: number;
+    preferred_call_minute_local: number;
+    duolingo_unit?: string | null;
+  }) => CoachUser;
+  setUserInactive: (phone: string) => void;
+  setUserInactiveById: (userId: number) => void;
+  listUsers: () => CoachUser[];
+  listActiveUsers: () => CoachUser[];
+  updateLastCalled: (userId: number) => void;
+  createCallLog: (input: { user_id: number; call_sid?: string | null; outcome?: string | null }) => number;
+  updateCallLogBySid: (
+    callSid: string,
+    updates: {
+      started_at?: string | null;
+      ended_at?: string | null;
+      outcome?: string | null;
+      summary?: string | null;
+      metrics_json?: string | null;
+    }
+  ) => void;
+  updateCallLogById: (
+    callLogId: number,
+    updates: {
+      started_at?: string | null;
+      ended_at?: string | null;
+      outcome?: string | null;
+      summary?: string | null;
+      metrics_json?: string | null;
+    }
+  ) => void;
+  getUserById: (userId: number) => CoachUser | undefined;
+  updateUserLevel: (userId: number, level: LevelEstimate) => void;
+};
+
+function getStore(): CoachStore {
+  if (!store) {
+    store = initializeStore();
+  }
+  return store;
+}
+
+function getDb(): DatabaseHandle {
   if (!db) {
     const dbPath = env.DB_PATH ?? path.join(process.cwd(), "data", "coach.sqlite");
     ensureDbPath(dbPath);
-    db = loadDatabaseDriver().create(dbPath);
+    const driver = loadDatabaseDriver();
+    db = driver.create(dbPath);
     db.exec("PRAGMA journal_mode = WAL;");
     initializeCoachDb(db);
   }
@@ -72,6 +121,19 @@ function loadDatabaseDriver(): { create: (dbPath: string) => DatabaseHandle } {
         `SQLite driver not available. Install "better-sqlite3" or upgrade to Node 22+ to use node:sqlite. (${reasons})`
       );
     }
+  }
+}
+
+function initializeStore(): CoachStore {
+  try {
+    const database = getDb();
+    return createSqlStore(database);
+  } catch (error) {
+    console.warn(
+      "SQLite driver not available; falling back to an in-memory store. Data will not persist across restarts."
+    );
+    console.warn(error);
+    return createMemoryStore();
   }
 }
 
@@ -126,6 +188,316 @@ function initializeCoachDb(database: DatabaseHandle) {
   `);
 }
 
+function createSqlStore(database: DatabaseHandle): CoachStore {
+  return {
+    upsertUser(input) {
+      const now = new Date().toISOString();
+
+      const existing = database
+        .prepare("SELECT * FROM users WHERE phone_e164 = ?")
+        .get(input.phone_e164) as CoachUser | undefined;
+
+      if (existing) {
+        database
+          .prepare(
+            `UPDATE users
+             SET name = ?, timezone = ?, preferred_call_hour_local = ?, preferred_call_minute_local = ?,
+                 duolingo_unit = ?, is_active = 1, consented_at = ?, updated_at = ?
+             WHERE phone_e164 = ?`
+          )
+          .run(
+            input.name ?? existing.name,
+            input.timezone,
+            input.preferred_call_hour_local,
+            input.preferred_call_minute_local,
+            input.duolingo_unit ?? existing.duolingo_unit,
+            now,
+            now,
+            input.phone_e164
+          );
+      } else {
+        database
+          .prepare(
+            `INSERT INTO users
+             (phone_e164, name, timezone, preferred_call_hour_local, preferred_call_minute_local, level_estimate,
+              duolingo_unit, is_active, consented_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'A0', ?, 1, ?, ?, ?)`
+          )
+          .run(
+            input.phone_e164,
+            input.name ?? null,
+            input.timezone,
+            input.preferred_call_hour_local,
+            input.preferred_call_minute_local,
+            input.duolingo_unit ?? null,
+            now,
+            now,
+            now
+          );
+      }
+
+      return database
+        .prepare("SELECT * FROM users WHERE phone_e164 = ?")
+        .get(input.phone_e164) as CoachUser;
+    },
+    setUserInactive(phone) {
+      const now = new Date().toISOString();
+      database
+        .prepare("UPDATE users SET is_active = 0, updated_at = ? WHERE phone_e164 = ?")
+        .run(now, phone);
+    },
+    setUserInactiveById(userId) {
+      const now = new Date().toISOString();
+      database
+        .prepare("UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?")
+        .run(now, userId);
+    },
+    listUsers() {
+      return database.prepare("SELECT * FROM users ORDER BY created_at DESC").all() as CoachUser[];
+    },
+    listActiveUsers() {
+      return database.prepare("SELECT * FROM users WHERE is_active = 1").all() as CoachUser[];
+    },
+    updateLastCalled(userId) {
+      const now = new Date().toISOString();
+      database
+        .prepare("UPDATE users SET last_called_at = ?, updated_at = ? WHERE id = ?")
+        .run(now, now, userId);
+    },
+    createCallLog(input) {
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `INSERT INTO call_logs
+           (user_id, call_sid, outcome, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(input.user_id, input.call_sid ?? null, input.outcome ?? null, now, now);
+
+      const row = database.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
+      return row.id;
+    },
+    updateCallLogBySid(callSid, updates) {
+      const now = new Date().toISOString();
+      const current = database
+        .prepare("SELECT * FROM call_logs WHERE call_sid = ? ORDER BY id DESC LIMIT 1")
+        .get(callSid) as { id: number } | undefined;
+      if (!current) return;
+
+      database
+        .prepare(
+          `UPDATE call_logs
+           SET started_at = COALESCE(?, started_at),
+               ended_at = COALESCE(?, ended_at),
+               outcome = COALESCE(?, outcome),
+               summary = COALESCE(?, summary),
+               metrics_json = COALESCE(?, metrics_json),
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          updates.started_at ?? null,
+          updates.ended_at ?? null,
+          updates.outcome ?? null,
+          updates.summary ?? null,
+          updates.metrics_json ?? null,
+          now,
+          current.id
+        );
+    },
+    updateCallLogById(callLogId, updates) {
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `UPDATE call_logs
+           SET started_at = COALESCE(?, started_at),
+               ended_at = COALESCE(?, ended_at),
+               outcome = COALESCE(?, outcome),
+               summary = COALESCE(?, summary),
+               metrics_json = COALESCE(?, metrics_json),
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          updates.started_at ?? null,
+          updates.ended_at ?? null,
+          updates.outcome ?? null,
+          updates.summary ?? null,
+          updates.metrics_json ?? null,
+          now,
+          callLogId
+        );
+    },
+    getUserById(userId) {
+      return database.prepare("SELECT * FROM users WHERE id = ?").get(userId) as
+        | CoachUser
+        | undefined;
+    },
+    updateUserLevel(userId, level) {
+      const now = new Date().toISOString();
+      database
+        .prepare("UPDATE users SET level_estimate = ?, updated_at = ? WHERE id = ?")
+        .run(level, now, userId);
+    },
+  };
+}
+
+type MemoryCallLog = {
+  id: number;
+  user_id: number;
+  call_sid: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  outcome: string | null;
+  summary: string | null;
+  metrics_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function createMemoryStore(): CoachStore {
+  let nextUserId = 1;
+  let nextCallLogId = 1;
+  const users = new Map<number, CoachUser>();
+  const usersByPhone = new Map<string, CoachUser>();
+  const callLogs = new Map<number, MemoryCallLog>();
+
+  const listUserValues = () =>
+    Array.from(users.values()).sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+  return {
+    upsertUser(input) {
+      const now = new Date().toISOString();
+      const existing = usersByPhone.get(input.phone_e164);
+      if (existing) {
+        const updated: CoachUser = {
+          ...existing,
+          name: input.name ?? existing.name,
+          timezone: input.timezone,
+          preferred_call_hour_local: input.preferred_call_hour_local,
+          preferred_call_minute_local: input.preferred_call_minute_local,
+          duolingo_unit: input.duolingo_unit ?? existing.duolingo_unit,
+          is_active: 1,
+          consented_at: now,
+          updated_at: now,
+        };
+        users.set(updated.id, updated);
+        usersByPhone.set(updated.phone_e164, updated);
+        return updated;
+      }
+
+      const created: CoachUser = {
+        id: nextUserId++,
+        phone_e164: input.phone_e164,
+        name: input.name ?? null,
+        timezone: input.timezone,
+        preferred_call_hour_local: input.preferred_call_hour_local,
+        preferred_call_minute_local: input.preferred_call_minute_local,
+        level_estimate: "A0",
+        duolingo_unit: input.duolingo_unit ?? null,
+        is_active: 1,
+        consented_at: now,
+        last_called_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+
+      users.set(created.id, created);
+      usersByPhone.set(created.phone_e164, created);
+      return created;
+    },
+    setUserInactive(phone) {
+      const existing = usersByPhone.get(phone);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = { ...existing, is_active: 0, updated_at: now };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+    },
+    setUserInactiveById(userId) {
+      const existing = users.get(userId);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = { ...existing, is_active: 0, updated_at: now };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+    },
+    listUsers() {
+      return listUserValues();
+    },
+    listActiveUsers() {
+      return listUserValues().filter((user) => user.is_active === 1);
+    },
+    updateLastCalled(userId) {
+      const existing = users.get(userId);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = { ...existing, last_called_at: now, updated_at: now };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+    },
+    createCallLog(input) {
+      const now = new Date().toISOString();
+      const callLog: MemoryCallLog = {
+        id: nextCallLogId++,
+        user_id: input.user_id,
+        call_sid: input.call_sid ?? null,
+        started_at: null,
+        ended_at: null,
+        outcome: input.outcome ?? null,
+        summary: null,
+        metrics_json: null,
+        created_at: now,
+        updated_at: now,
+      };
+      callLogs.set(callLog.id, callLog);
+      return callLog.id;
+    },
+    updateCallLogBySid(callSid, updates) {
+      const candidates = Array.from(callLogs.values()).filter((log) => log.call_sid === callSid);
+      if (candidates.length === 0) return;
+      const current = candidates.reduce((latest, log) => (log.id > latest.id ? log : latest));
+      const now = new Date().toISOString();
+      const updated: MemoryCallLog = {
+        ...current,
+        started_at: updates.started_at ?? current.started_at,
+        ended_at: updates.ended_at ?? current.ended_at,
+        outcome: updates.outcome ?? current.outcome,
+        summary: updates.summary ?? current.summary,
+        metrics_json: updates.metrics_json ?? current.metrics_json,
+        updated_at: now,
+      };
+      callLogs.set(updated.id, updated);
+    },
+    updateCallLogById(callLogId, updates) {
+      const current = callLogs.get(callLogId);
+      if (!current) return;
+      const now = new Date().toISOString();
+      const updated: MemoryCallLog = {
+        ...current,
+        started_at: updates.started_at ?? current.started_at,
+        ended_at: updates.ended_at ?? current.ended_at,
+        outcome: updates.outcome ?? current.outcome,
+        summary: updates.summary ?? current.summary,
+        metrics_json: updates.metrics_json ?? current.metrics_json,
+        updated_at: now,
+      };
+      callLogs.set(updated.id, updated);
+    },
+    getUserById(userId) {
+      return users.get(userId);
+    },
+    updateUserLevel(userId, level) {
+      const existing = users.get(userId);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = { ...existing, level_estimate: level, updated_at: now };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+    },
+  };
+}
+
 export function upsertUser(input: {
   phone_e164: string;
   name?: string | null;
@@ -134,89 +506,27 @@ export function upsertUser(input: {
   preferred_call_minute_local: number;
   duolingo_unit?: string | null;
 }): CoachUser {
-  const database = getDb();
-  const now = new Date().toISOString();
-
-  const existing = database
-    .prepare("SELECT * FROM users WHERE phone_e164 = ?")
-    .get(input.phone_e164) as CoachUser | undefined;
-
-  if (existing) {
-    database
-      .prepare(
-        `UPDATE users
-         SET name = ?, timezone = ?, preferred_call_hour_local = ?, preferred_call_minute_local = ?,
-             duolingo_unit = ?, is_active = 1, consented_at = ?, updated_at = ?
-         WHERE phone_e164 = ?`
-      )
-      .run(
-        input.name ?? existing.name,
-        input.timezone,
-        input.preferred_call_hour_local,
-        input.preferred_call_minute_local,
-        input.duolingo_unit ?? existing.duolingo_unit,
-        now,
-        now,
-        input.phone_e164
-      );
-  } else {
-    database
-      .prepare(
-        `INSERT INTO users
-         (phone_e164, name, timezone, preferred_call_hour_local, preferred_call_minute_local, level_estimate,
-          duolingo_unit, is_active, consented_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'A0', ?, 1, ?, ?, ?)`
-      )
-      .run(
-        input.phone_e164,
-        input.name ?? null,
-        input.timezone,
-        input.preferred_call_hour_local,
-        input.preferred_call_minute_local,
-        input.duolingo_unit ?? null,
-        now,
-        now,
-        now
-      );
-  }
-
-  return database
-    .prepare("SELECT * FROM users WHERE phone_e164 = ?")
-    .get(input.phone_e164) as CoachUser;
+  return getStore().upsertUser(input);
 }
 
 export function setUserInactive(phone: string): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare("UPDATE users SET is_active = 0, updated_at = ? WHERE phone_e164 = ?")
-    .run(now, phone);
+  getStore().setUserInactive(phone);
 }
 
 export function setUserInactiveById(userId: number): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare("UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?")
-    .run(now, userId);
+  getStore().setUserInactiveById(userId);
 }
 
 export function listUsers(): CoachUser[] {
-  const database = getDb();
-  return database.prepare("SELECT * FROM users ORDER BY created_at DESC").all() as CoachUser[];
+  return getStore().listUsers();
 }
 
 export function listActiveUsers(): CoachUser[] {
-  const database = getDb();
-  return database.prepare("SELECT * FROM users WHERE is_active = 1").all() as CoachUser[];
+  return getStore().listActiveUsers();
 }
 
 export function updateLastCalled(userId: number): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare("UPDATE users SET last_called_at = ?, updated_at = ? WHERE id = ?")
-    .run(now, now, userId);
+  getStore().updateLastCalled(userId);
 }
 
 export function createCallLog(input: {
@@ -224,18 +534,7 @@ export function createCallLog(input: {
   call_sid?: string | null;
   outcome?: string | null;
 }): number {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO call_logs
-       (user_id, call_sid, outcome, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`
-    )
-    .run(input.user_id, input.call_sid ?? null, input.outcome ?? null, now, now);
-
-  const row = database.prepare("SELECT last_insert_rowid() as id").get() as { id: number };
-  return row.id;
+  return getStore().createCallLog(input);
 }
 
 export function updateCallLogBySid(callSid: string, updates: {
@@ -245,33 +544,7 @@ export function updateCallLogBySid(callSid: string, updates: {
   summary?: string | null;
   metrics_json?: string | null;
 }): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  const current = database
-    .prepare("SELECT * FROM call_logs WHERE call_sid = ? ORDER BY id DESC LIMIT 1")
-    .get(callSid) as { id: number } | undefined;
-  if (!current) return;
-
-  database
-    .prepare(
-      `UPDATE call_logs
-       SET started_at = COALESCE(?, started_at),
-           ended_at = COALESCE(?, ended_at),
-           outcome = COALESCE(?, outcome),
-           summary = COALESCE(?, summary),
-           metrics_json = COALESCE(?, metrics_json),
-           updated_at = ?
-       WHERE id = ?`
-    )
-    .run(
-      updates.started_at ?? null,
-      updates.ended_at ?? null,
-      updates.outcome ?? null,
-      updates.summary ?? null,
-      updates.metrics_json ?? null,
-      now,
-      current.id
-    );
+  getStore().updateCallLogBySid(callSid, updates);
 }
 
 export function updateCallLogById(callLogId: number, updates: {
@@ -281,41 +554,13 @@ export function updateCallLogById(callLogId: number, updates: {
   summary?: string | null;
   metrics_json?: string | null;
 }): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `UPDATE call_logs
-       SET started_at = COALESCE(?, started_at),
-           ended_at = COALESCE(?, ended_at),
-           outcome = COALESCE(?, outcome),
-           summary = COALESCE(?, summary),
-           metrics_json = COALESCE(?, metrics_json),
-           updated_at = ?
-       WHERE id = ?`
-    )
-    .run(
-      updates.started_at ?? null,
-      updates.ended_at ?? null,
-      updates.outcome ?? null,
-      updates.summary ?? null,
-      updates.metrics_json ?? null,
-      now,
-      callLogId
-    );
+  getStore().updateCallLogById(callLogId, updates);
 }
 
 export function getUserById(userId: number): CoachUser | undefined {
-  const database = getDb();
-  return database.prepare("SELECT * FROM users WHERE id = ?").get(userId) as
-    | CoachUser
-    | undefined;
+  return getStore().getUserById(userId);
 }
 
 export function updateUserLevel(userId: number, level: LevelEstimate): void {
-  const database = getDb();
-  const now = new Date().toISOString();
-  database
-    .prepare("UPDATE users SET level_estimate = ?, updated_at = ? WHERE id = ?")
-    .run(level, now, userId);
+  getStore().updateUserLevel(userId, level);
 }
