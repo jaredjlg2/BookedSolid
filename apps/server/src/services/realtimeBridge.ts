@@ -11,33 +11,28 @@ export function connectOpenAIRealtime(): WebSocket {
   const ws = new WebSocket(url, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      // Optional, but harmless if included:
-      // "OpenAI-Beta": "realtime=v1",
+      "OpenAI-Beta": "realtime=v1",
     },
   });
 
   ws.on("open", () => {
     console.log("✅ OpenAI Realtime connected");
 
-    // REQUIRED: session.type must be set
     ws.send(
-  JSON.stringify({
-    type: "session.update",
-    session: {
-      type: "realtime",
-      model: "gpt-realtime",
-      instructions:
-        "You are a professional phone receptionist. Be brief, friendly, and ask how you can help.",
-      output_modalities: ["audio", "text"],
-      // Try to match Twilio:
-      input_audio_format: "g711_ulaw",
-      output_audio_format: "g711_ulaw",
-      voice: "alloy",
-      turn_detection: { type: "server_vad" },
-     },
-   })
- );
-});
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          modalities: ["audio", "text"],
+          instructions:
+            "You are a professional phone receptionist. Be brief, friendly, and ask how you can help.",
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          voice: "alloy",
+          turn_detection: { type: "server_vad" },
+        },
+      }),
+    );
+  });
 
   ws.on("message", (data) => {
     try {
