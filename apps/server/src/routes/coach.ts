@@ -14,6 +14,7 @@ import {
 } from "../services/coachDb";
 import { runCoachCallsNow } from "../services/coachScheduler";
 import { placeCoachCall } from "../services/coachTwilio";
+import { buildCallInstructions } from "../services/instructionBuilder";
 
 export const coachRouter = Router();
 
@@ -26,6 +27,8 @@ const signupSchema = z.object({
   preferredCallTime: z.string().regex(/^\d{2}:\d{2}$/),
   timezone: z.string().default("America/Phoenix"),
   duolingoUnit: z.string().optional(),
+  callPrompt: z.string().optional(),
+  callInstructions: z.string().optional(),
   password: passwordSchema.optional(),
 });
 
@@ -41,6 +44,8 @@ const preferenceSchema = z.object({
   preferredCallMinute: z.number().int().min(0).max(59).optional(),
   levelEstimate: z.enum(["A0", "A1", "A2", "B1"]).optional(),
   duolingoUnit: z.string().nullable().optional(),
+  callPrompt: z.string().nullable().optional(),
+  callInstructions: z.string().nullable().optional(),
 });
 
 const HASH_ITERATIONS = 120_000;
@@ -130,6 +135,8 @@ coachRouter.post("/coach/signup", (req, res) => {
     preferred_call_hour_local: hour,
     preferred_call_minute_local: minute,
     duolingo_unit: parsed.data.duolingoUnit,
+    call_prompt: parsed.data.callPrompt,
+    call_instructions: parsed.data.callInstructions,
     password_hash: passwordHash,
   });
 
@@ -175,6 +182,8 @@ coachRouter.post("/coach/call-now", async (req, res) => {
     preferred_call_hour_local: hour,
     preferred_call_minute_local: minute,
     duolingo_unit: parsed.data.duolingoUnit,
+    call_prompt: parsed.data.callPrompt,
+    call_instructions: parsed.data.callInstructions,
     password_hash: passwordHash,
   });
 
@@ -217,6 +226,8 @@ coachRouter.post("/coach/login", (req, res) => {
       preferred_call_minute_local: user.preferred_call_minute_local,
       level_estimate: user.level_estimate,
       duolingo_unit: user.duolingo_unit,
+      call_prompt: user.call_prompt,
+      call_instructions: user.call_instructions,
     },
   });
 });
@@ -247,6 +258,8 @@ coachRouter.get("/coach/me", (req, res) => {
     preferred_call_minute_local: user.preferred_call_minute_local,
     level_estimate: user.level_estimate,
     duolingo_unit: user.duolingo_unit,
+    call_prompt: user.call_prompt,
+    call_instructions: user.call_instructions,
   });
 });
 
@@ -264,6 +277,8 @@ coachRouter.post("/coach/preferences", (req, res) => {
     preferred_call_minute_local: parsed.data.preferredCallMinute,
     level_estimate: parsed.data.levelEstimate,
     duolingo_unit: parsed.data.duolingoUnit ?? undefined,
+    call_prompt: parsed.data.callPrompt ?? undefined,
+    call_instructions: parsed.data.callInstructions ?? undefined,
   });
   if (!updates) {
     return res.status(404).json({ error: "User not found" });
@@ -279,11 +294,44 @@ coachRouter.post("/coach/preferences", (req, res) => {
       preferred_call_minute_local: updates.preferred_call_minute_local,
       level_estimate: updates.level_estimate,
       duolingo_unit: updates.duolingo_unit,
+      call_prompt: updates.call_prompt,
+      call_instructions: updates.call_instructions,
     },
   });
 });
 
+coachRouter.post("/coach/instructions", async (req, res) => {
+  const user = requireCoachAuth(req, res);
+  if (!user) return;
+  const parsed = z
+    .object({ prompt: z.string().min(5, "Please enter a longer prompt.") })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+  }
+  try {
+    const instructions = await buildCallInstructions(parsed.data.prompt);
+    return res.json({ ok: true, instructions });
+  } catch (error) {
+    console.error("Failed to build instructions", error);
+    return res.status(500).json({ error: "Failed to generate instructions" });
+  }
+});
+
 coachRouter.get("/coach/portal", (_req, res) => {
+  const twilioConfigured = Boolean(
+    env.TWILIO_ACCOUNT_SID &&
+      env.TWILIO_AUTH_TOKEN &&
+      env.PUBLIC_BASE_URL &&
+      (env.TWILIO_FROM_NUMBER ?? env.TWILIO_PHONE_NUMBER)
+  );
+  const callNowNotice = twilioConfigured
+    ? ""
+    : `<div class="callout warning">
+        “Call me now” is disabled until Twilio is configured. Set
+        <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>,
+        <code>TWILIO_FROM_NUMBER</code>, and <code>PUBLIC_BASE_URL</code>.
+      </div>`;
   return res.type("html").send(`<!doctype html>
 <html lang="en">
   <head>
@@ -360,8 +408,27 @@ coachRouter.get("/coach/portal", (_req, res) => {
         color: #1e3a8a;
         font-size: 14px;
       }
+      .callout.warning {
+        background: #fef3c7;
+        color: #92400e;
+      }
       .hidden {
         display: none;
+      }
+      textarea {
+        width: 100%;
+        min-height: 110px;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        font-family: inherit;
+        resize: vertical;
+      }
+      .button-row {
+        display: grid;
+        gap: 10px;
       }
     </style>
   </head>
@@ -398,6 +465,7 @@ coachRouter.get("/coach/portal", (_req, res) => {
 
       <section id="preferences-section" class="hidden">
         <h2>Preferences</h2>
+        ${callNowNotice}
         <form id="preferences-form">
           <label for="pref-name">Name (optional)</label>
           <input id="pref-name" name="name" placeholder="Ava" />
@@ -448,7 +516,34 @@ coachRouter.get("/coach/portal", (_req, res) => {
             <option value="Duolingo Unit 3">Duolingo Unit 3</option>
           </select>
 
-          <button type="submit">Save preferences</button>
+          <label for="call-prompt">What are you looking for in the call?</label>
+          <textarea
+            id="call-prompt"
+            name="callPrompt"
+            placeholder="e.g. Help me practice ordering coffee and correcting my pronunciation."
+          ></textarea>
+
+          <label for="call-instructions">Generated call instructions</label>
+          <textarea
+            id="call-instructions"
+            name="callInstructions"
+            placeholder="Use the button below to generate instructions."
+          ></textarea>
+
+          <div class="button-row">
+            <button type="button" class="secondary" id="generate-instructions">
+              Generate instructions
+            </button>
+            <button type="submit">Save preferences</button>
+            <button
+              type="button"
+              class="secondary"
+              id="call-now"
+              ${twilioConfigured ? "" : "disabled"}
+            >
+              Call me now
+            </button>
+          </div>
         </form>
       </section>
 
@@ -469,6 +564,11 @@ coachRouter.get("/coach/portal", (_req, res) => {
       const levelSelect = document.getElementById("pref-level");
       const promptSelect = document.getElementById("pref-prompt");
       const nameInput = document.getElementById("pref-name");
+      const callPromptInput = document.getElementById("call-prompt");
+      const callInstructionsInput = document.getElementById("call-instructions");
+      const generateButton = document.getElementById("generate-instructions");
+      const callNowButton = document.getElementById("call-now");
+      let currentPhone = null;
 
       for (let hour = 0; hour < 24; hour += 1) {
         const option = document.createElement("option");
@@ -505,12 +605,15 @@ coachRouter.get("/coach/portal", (_req, res) => {
           return;
         }
         const user = await response.json();
+        currentPhone = user.phone_e164;
         nameInput.value = user.name || "";
         hourSelect.value = String(user.preferred_call_hour_local);
         minuteSelect.value = String(user.preferred_call_minute_local);
         timezoneSelect.value = user.timezone;
         levelSelect.value = user.level_estimate;
         promptSelect.value = user.duolingo_unit || "";
+        callPromptInput.value = user.call_prompt || "";
+        callInstructionsInput.value = user.call_instructions || "";
         preferencesSection.classList.remove("hidden");
         loginSection.classList.add("hidden");
         setPasswordSection.classList.add("hidden");
@@ -571,6 +674,8 @@ coachRouter.get("/coach/portal", (_req, res) => {
           preferredCallMinute: Number(minuteSelect.value),
           levelEstimate: levelSelect.value,
           duolingoUnit: promptSelect.value || null,
+          callPrompt: callPromptInput.value || null,
+          callInstructions: callInstructionsInput.value || null,
         };
         const response = await fetch("/coach/preferences", {
           method: "POST",
@@ -582,6 +687,71 @@ coachRouter.get("/coach/portal", (_req, res) => {
           return;
         }
         setStatus("Preferences saved.");
+      });
+
+      generateButton.addEventListener("click", async () => {
+        const auth = getAuthHeader();
+        if (!auth) {
+          setStatus("Please log in to generate instructions.", true);
+          return;
+        }
+        if (!callPromptInput.value.trim()) {
+          setStatus("Add a prompt before generating instructions.", true);
+          return;
+        }
+        generateButton.disabled = true;
+        generateButton.textContent = "Generating...";
+        const response = await fetch("/coach/instructions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: auth },
+          body: JSON.stringify({ prompt: callPromptInput.value }),
+        });
+        if (!response.ok) {
+          setStatus("Failed to generate instructions.", true);
+          generateButton.disabled = false;
+          generateButton.textContent = "Generate instructions";
+          return;
+        }
+        const data = await response.json();
+        callInstructionsInput.value = data.instructions || "";
+        setStatus("Instructions generated. Save to keep them.");
+        generateButton.disabled = false;
+        generateButton.textContent = "Generate instructions";
+      });
+
+      callNowButton.addEventListener("click", async () => {
+        if (!currentPhone) {
+          setStatus("Missing phone number. Refresh and log in again.", true);
+          return;
+        }
+        callNowButton.disabled = true;
+        callNowButton.textContent = "Calling...";
+        const payload = {
+          phone: currentPhone,
+          name: nameInput.value || undefined,
+          preferredCallTime: `${hourSelect.value.padStart(2, "0")}:${minuteSelect.value.padStart(
+            2,
+            "0"
+          )}`,
+          timezone: timezoneSelect.value,
+          duolingoUnit: promptSelect.value || undefined,
+          callPrompt: callPromptInput.value || undefined,
+          callInstructions: callInstructionsInput.value || undefined,
+        };
+        const response = await fetch("/coach/call-now", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          setStatus("Failed to place call. Check Twilio settings.", true);
+          callNowButton.disabled = false;
+          callNowButton.textContent = "Call me now";
+          return;
+        }
+        setStatus("Call initiated.");
+        callNowButton.disabled = false;
+        callNowButton.textContent = "Call me now";
       });
 
       const existingAuth = getAuthHeader();

@@ -14,6 +14,7 @@ import {
   setUserInactiveById,
   updateCallLogBySid,
   updateUserLevel,
+  getUserById,
 } from "./services/coachDb";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -194,7 +195,13 @@ wss.on("connection", (twilioWs) => {
       console.log("Stream start", msg.start);
 
       if (!openaiWs) {
-        const instructions = mode === "spanish_coach" ? spanishCoachPrompt : receptionistPrompt;
+        let instructions = mode === "spanish_coach" ? spanishCoachPrompt : receptionistPrompt;
+        if (mode === "spanish_coach" && userId) {
+          const user = getUserById(userId);
+          if (user?.call_instructions) {
+            instructions = `${spanishCoachPrompt}\n\nUser call focus:\n${user.call_instructions}`;
+          }
+        }
         openaiWs = connectOpenAIRealtime({ instructions });
 
         openaiWs.on("open", () => {

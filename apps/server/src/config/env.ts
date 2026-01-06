@@ -15,6 +15,7 @@ const EnvSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_REALTIME_MODEL: z.string().optional(),
+  OPENAI_INSTRUCTION_MODEL: z.string().optional(),
 
   // Add these later when you wire scheduling
   GOOGLE_CLIENT_ID: z.string().optional(),
