@@ -14,6 +14,7 @@ export interface CoachUser {
   preferred_call_minute_local: number;
   level_estimate: LevelEstimate;
   duolingo_unit: string | null;
+  password_hash: string | null;
   is_active: number;
   consented_at: string | null;
   last_called_at: string | null;
@@ -52,7 +53,21 @@ type CoachStore = {
     preferred_call_hour_local: number;
     preferred_call_minute_local: number;
     duolingo_unit?: string | null;
+    password_hash?: string | null;
   }) => CoachUser;
+  getUserByPhone: (phone: string) => CoachUser | undefined;
+  setUserPassword: (phone: string, passwordHash: string) => void;
+  updateUserPreferences: (
+    userId: number,
+    updates: {
+      name?: string | null;
+      timezone?: string;
+      preferred_call_hour_local?: number;
+      preferred_call_minute_local?: number;
+      level_estimate?: LevelEstimate;
+      duolingo_unit?: string | null;
+    }
+  ) => CoachUser | undefined;
   setUserInactive: (phone: string) => void;
   setUserInactiveById: (userId: number) => void;
   listUsers: () => CoachUser[];
@@ -148,6 +163,7 @@ function initializeCoachDb(database: DatabaseHandle) {
       preferred_call_minute_local INTEGER NOT NULL,
       level_estimate TEXT DEFAULT 'A0',
       duolingo_unit TEXT,
+      password_hash TEXT,
       is_active INTEGER DEFAULT 1,
       consented_at TEXT,
       last_called_at TEXT,
@@ -186,6 +202,12 @@ function initializeCoachDb(database: DatabaseHandle) {
       FOREIGN KEY(vocab_id) REFERENCES vocab_items(id)
     );
   `);
+
+  const columns = database.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  const existingColumns = new Set(columns.map((column) => column.name));
+  if (!existingColumns.has("password_hash")) {
+    database.exec("ALTER TABLE users ADD COLUMN password_hash TEXT;");
+  }
 }
 
 function createSqlStore(database: DatabaseHandle): CoachStore {
@@ -202,7 +224,8 @@ function createSqlStore(database: DatabaseHandle): CoachStore {
           .prepare(
             `UPDATE users
              SET name = ?, timezone = ?, preferred_call_hour_local = ?, preferred_call_minute_local = ?,
-                 duolingo_unit = ?, is_active = 1, consented_at = ?, updated_at = ?
+                 duolingo_unit = ?, password_hash = COALESCE(?, password_hash),
+                 is_active = 1, consented_at = ?, updated_at = ?
              WHERE phone_e164 = ?`
           )
           .run(
@@ -211,6 +234,7 @@ function createSqlStore(database: DatabaseHandle): CoachStore {
             input.preferred_call_hour_local,
             input.preferred_call_minute_local,
             input.duolingo_unit ?? existing.duolingo_unit,
+            input.password_hash ?? null,
             now,
             now,
             input.phone_e164
@@ -220,8 +244,8 @@ function createSqlStore(database: DatabaseHandle): CoachStore {
           .prepare(
             `INSERT INTO users
              (phone_e164, name, timezone, preferred_call_hour_local, preferred_call_minute_local, level_estimate,
-              duolingo_unit, is_active, consented_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'A0', ?, 1, ?, ?, ?)`
+              duolingo_unit, password_hash, is_active, consented_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'A0', ?, ?, 1, ?, ?, ?)`
           )
           .run(
             input.phone_e164,
@@ -230,6 +254,7 @@ function createSqlStore(database: DatabaseHandle): CoachStore {
             input.preferred_call_hour_local,
             input.preferred_call_minute_local,
             input.duolingo_unit ?? null,
+            input.password_hash ?? null,
             now,
             now,
             now
@@ -239,6 +264,47 @@ function createSqlStore(database: DatabaseHandle): CoachStore {
       return database
         .prepare("SELECT * FROM users WHERE phone_e164 = ?")
         .get(input.phone_e164) as CoachUser;
+    },
+    getUserByPhone(phone) {
+      return database.prepare("SELECT * FROM users WHERE phone_e164 = ?").get(phone) as
+        | CoachUser
+        | undefined;
+    },
+    setUserPassword(phone, passwordHash) {
+      const now = new Date().toISOString();
+      database
+        .prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE phone_e164 = ?")
+        .run(passwordHash, now, phone);
+    },
+    updateUserPreferences(userId, updates) {
+      const now = new Date().toISOString();
+      const existing = database.prepare("SELECT * FROM users WHERE id = ?").get(userId) as
+        | CoachUser
+        | undefined;
+      if (!existing) return;
+      database
+        .prepare(
+          `UPDATE users
+           SET name = COALESCE(?, name),
+               timezone = COALESCE(?, timezone),
+               preferred_call_hour_local = COALESCE(?, preferred_call_hour_local),
+               preferred_call_minute_local = COALESCE(?, preferred_call_minute_local),
+               level_estimate = COALESCE(?, level_estimate),
+               duolingo_unit = COALESCE(?, duolingo_unit),
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          updates.name ?? null,
+          updates.timezone ?? null,
+          updates.preferred_call_hour_local ?? null,
+          updates.preferred_call_minute_local ?? null,
+          updates.level_estimate ?? null,
+          updates.duolingo_unit ?? null,
+          now,
+          userId
+        );
+      return database.prepare("SELECT * FROM users WHERE id = ?").get(userId) as CoachUser;
     },
     setUserInactive(phone) {
       const now = new Date().toISOString();
@@ -377,6 +443,7 @@ function createMemoryStore(): CoachStore {
           preferred_call_hour_local: input.preferred_call_hour_local,
           preferred_call_minute_local: input.preferred_call_minute_local,
           duolingo_unit: input.duolingo_unit ?? existing.duolingo_unit,
+          password_hash: input.password_hash ?? existing.password_hash,
           is_active: 1,
           consented_at: now,
           updated_at: now,
@@ -395,6 +462,7 @@ function createMemoryStore(): CoachStore {
         preferred_call_minute_local: input.preferred_call_minute_local,
         level_estimate: "A0",
         duolingo_unit: input.duolingo_unit ?? null,
+        password_hash: input.password_hash ?? null,
         is_active: 1,
         consented_at: now,
         last_called_at: null,
@@ -405,6 +473,36 @@ function createMemoryStore(): CoachStore {
       users.set(created.id, created);
       usersByPhone.set(created.phone_e164, created);
       return created;
+    },
+    getUserByPhone(phone) {
+      return usersByPhone.get(phone);
+    },
+    setUserPassword(phone, passwordHash) {
+      const existing = usersByPhone.get(phone);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = { ...existing, password_hash: passwordHash, updated_at: now };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+    },
+    updateUserPreferences(userId, updates) {
+      const existing = users.get(userId);
+      if (!existing) return;
+      const now = new Date().toISOString();
+      const updated: CoachUser = {
+        ...existing,
+        name: updates.name ?? existing.name,
+        timezone: updates.timezone ?? existing.timezone,
+        preferred_call_hour_local: updates.preferred_call_hour_local ?? existing.preferred_call_hour_local,
+        preferred_call_minute_local:
+          updates.preferred_call_minute_local ?? existing.preferred_call_minute_local,
+        level_estimate: updates.level_estimate ?? existing.level_estimate,
+        duolingo_unit: updates.duolingo_unit ?? existing.duolingo_unit,
+        updated_at: now,
+      };
+      users.set(updated.id, updated);
+      usersByPhone.set(updated.phone_e164, updated);
+      return updated;
     },
     setUserInactive(phone) {
       const existing = usersByPhone.get(phone);
@@ -505,8 +603,31 @@ export function upsertUser(input: {
   preferred_call_hour_local: number;
   preferred_call_minute_local: number;
   duolingo_unit?: string | null;
+  password_hash?: string | null;
 }): CoachUser {
   return getStore().upsertUser(input);
+}
+
+export function getUserByPhone(phone: string): CoachUser | undefined {
+  return getStore().getUserByPhone(phone);
+}
+
+export function setUserPassword(phone: string, passwordHash: string): void {
+  getStore().setUserPassword(phone, passwordHash);
+}
+
+export function updateUserPreferences(
+  userId: number,
+  updates: {
+    name?: string | null;
+    timezone?: string;
+    preferred_call_hour_local?: number;
+    preferred_call_minute_local?: number;
+    level_estimate?: LevelEstimate;
+    duolingo_unit?: string | null;
+  }
+): CoachUser | undefined {
+  return getStore().updateUserPreferences(userId, updates);
 }
 
 export function setUserInactive(phone: string): void {

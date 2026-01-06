@@ -1,4 +1,5 @@
 import { Router } from "express";
+import * as crypto from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env";
 import {
@@ -7,6 +8,9 @@ import {
   upsertUser,
   createCallLog,
   updateLastCalled,
+  getUserByPhone,
+  setUserPassword,
+  updateUserPreferences,
 } from "../services/coachDb";
 import { runCoachCallsNow } from "../services/coachScheduler";
 import { placeCoachCall } from "../services/coachTwilio";
@@ -14,6 +18,7 @@ import { placeCoachCall } from "../services/coachTwilio";
 export const coachRouter = Router();
 
 const phoneSchema = z.string().regex(/^\+\d{10,15}$/);
+const passwordSchema = z.string().min(8);
 
 const signupSchema = z.object({
   phone: phoneSchema,
@@ -21,7 +26,77 @@ const signupSchema = z.object({
   preferredCallTime: z.string().regex(/^\d{2}:\d{2}$/),
   timezone: z.string().default("America/Phoenix"),
   duolingoUnit: z.string().optional(),
+  password: passwordSchema.optional(),
 });
+
+const loginSchema = z.object({
+  phone: phoneSchema,
+  password: passwordSchema,
+});
+
+const preferenceSchema = z.object({
+  name: z.string().optional(),
+  timezone: z.string().optional(),
+  preferredCallHour: z.number().int().min(0).max(23).optional(),
+  preferredCallMinute: z.number().int().min(0).max(59).optional(),
+  levelEstimate: z.enum(["A0", "A1", "A2", "B1"]).optional(),
+  duolingoUnit: z.string().nullable().optional(),
+});
+
+const HASH_ITERATIONS = 120_000;
+
+function hashPassword(password: string) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto
+    .pbkdf2Sync(password, salt, HASH_ITERATIONS, 32, "sha256")
+    .toString("hex");
+  return `pbkdf2_sha256$${HASH_ITERATIONS}$${salt}$${hash}`;
+}
+
+function verifyPassword(password: string, storedHash: string) {
+  const [algorithm, iterationsRaw, salt, expectedHash] = storedHash.split("$");
+  if (!algorithm || !iterationsRaw || !salt || !expectedHash) return false;
+  if (algorithm !== "pbkdf2_sha256") return false;
+  const iterations = Number(iterationsRaw);
+  if (!Number.isFinite(iterations)) return false;
+  const hash = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256").toString("hex");
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(expectedHash, "hex"));
+}
+
+function parseBasicAuth(req: any) {
+  const header = req.headers?.authorization;
+  if (typeof header !== "string") return null;
+  const [scheme, encoded] = header.split(" ");
+  if (scheme !== "Basic" || !encoded) return null;
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const index = decoded.indexOf(":");
+  if (index === -1) return null;
+  const phone = decoded.slice(0, index);
+  const password = decoded.slice(index + 1);
+  return { phone, password };
+}
+
+function requireCoachAuth(req: any, res: any) {
+  const auth = parseBasicAuth(req);
+  if (!auth) {
+    res.status(401).json({ error: "Missing authorization" });
+    return null;
+  }
+  const user = getUserByPhone(auth.phone);
+  if (!user) {
+    res.status(401).json({ error: "Invalid credentials" });
+    return null;
+  }
+  if (!user.password_hash) {
+    res.status(409).json({ error: "Password not set", code: "password_not_set" });
+    return null;
+  }
+  if (!verifyPassword(auth.password, user.password_hash)) {
+    res.status(401).json({ error: "Invalid credentials" });
+    return null;
+  }
+  return user;
+}
 
 function requireAdminKey(req: any, res: any, next: any) {
   if (!env.COACH_ADMIN_KEY) {
@@ -47,6 +122,7 @@ coachRouter.post("/coach/signup", (req, res) => {
     return res.status(400).json({ error: "Invalid preferredCallTime" });
   }
 
+  const passwordHash = parsed.data.password ? hashPassword(parsed.data.password) : undefined;
   const user = upsertUser({
     phone_e164: parsed.data.phone,
     name: parsed.data.name,
@@ -54,6 +130,7 @@ coachRouter.post("/coach/signup", (req, res) => {
     preferred_call_hour_local: hour,
     preferred_call_minute_local: minute,
     duolingo_unit: parsed.data.duolingoUnit,
+    password_hash: passwordHash,
   });
 
   return res.json(user);
@@ -90,6 +167,7 @@ coachRouter.post("/coach/call-now", async (req, res) => {
     return res.status(400).json({ error: "Invalid preferredCallTime" });
   }
 
+  const passwordHash = parsed.data.password ? hashPassword(parsed.data.password) : undefined;
   const user = upsertUser({
     phone_e164: parsed.data.phone,
     name: parsed.data.name,
@@ -97,6 +175,7 @@ coachRouter.post("/coach/call-now", async (req, res) => {
     preferred_call_hour_local: hour,
     preferred_call_minute_local: minute,
     duolingo_unit: parsed.data.duolingoUnit,
+    password_hash: passwordHash,
   });
 
   try {
@@ -108,6 +187,410 @@ coachRouter.post("/coach/call-now", async (req, res) => {
     console.error("Failed to place call now", error);
     return res.status(500).json({ error: "Failed to place call" });
   }
+});
+
+coachRouter.post("/coach/login", (req, res) => {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+  }
+
+  const user = getUserByPhone(parsed.data.phone);
+  if (!user) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  if (!user.password_hash) {
+    return res.status(409).json({ error: "Password not set", code: "password_not_set" });
+  }
+  if (!verifyPassword(parsed.data.password, user.password_hash)) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  return res.json({
+    ok: true,
+    user: {
+      id: user.id,
+      phone_e164: user.phone_e164,
+      name: user.name,
+      timezone: user.timezone,
+      preferred_call_hour_local: user.preferred_call_hour_local,
+      preferred_call_minute_local: user.preferred_call_minute_local,
+      level_estimate: user.level_estimate,
+      duolingo_unit: user.duolingo_unit,
+    },
+  });
+});
+
+coachRouter.post("/coach/set-password", (req, res) => {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+  }
+  const user = getUserByPhone(parsed.data.phone);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const passwordHash = hashPassword(parsed.data.password);
+  setUserPassword(parsed.data.phone, passwordHash);
+  return res.json({ ok: true });
+});
+
+coachRouter.get("/coach/me", (req, res) => {
+  const user = requireCoachAuth(req, res);
+  if (!user) return;
+  return res.json({
+    id: user.id,
+    phone_e164: user.phone_e164,
+    name: user.name,
+    timezone: user.timezone,
+    preferred_call_hour_local: user.preferred_call_hour_local,
+    preferred_call_minute_local: user.preferred_call_minute_local,
+    level_estimate: user.level_estimate,
+    duolingo_unit: user.duolingo_unit,
+  });
+});
+
+coachRouter.post("/coach/preferences", (req, res) => {
+  const user = requireCoachAuth(req, res);
+  if (!user) return;
+  const parsed = preferenceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+  }
+  const updates = updateUserPreferences(user.id, {
+    name: parsed.data.name,
+    timezone: parsed.data.timezone,
+    preferred_call_hour_local: parsed.data.preferredCallHour,
+    preferred_call_minute_local: parsed.data.preferredCallMinute,
+    level_estimate: parsed.data.levelEstimate,
+    duolingo_unit: parsed.data.duolingoUnit ?? undefined,
+  });
+  if (!updates) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  return res.json({
+    ok: true,
+    user: {
+      id: updates.id,
+      phone_e164: updates.phone_e164,
+      name: updates.name,
+      timezone: updates.timezone,
+      preferred_call_hour_local: updates.preferred_call_hour_local,
+      preferred_call_minute_local: updates.preferred_call_minute_local,
+      level_estimate: updates.level_estimate,
+      duolingo_unit: updates.duolingo_unit,
+    },
+  });
+});
+
+coachRouter.get("/coach/portal", (_req, res) => {
+  return res.type("html").send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Coach Portal</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 32px;
+        color: #111827;
+        background: #f8fafc;
+      }
+      main {
+        max-width: 640px;
+        margin: 0 auto;
+        background: #fff;
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        font-size: 24px;
+        margin-bottom: 8px;
+      }
+      h2 {
+        font-size: 18px;
+        margin: 24px 0 12px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        background: #fff;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+      }
+      button {
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        background: #2563eb;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #111827;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      button.secondary:hover {
+        background: #0f172a;
+      }
+      .callout {
+        background: #eff6ff;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 16px;
+        color: #1e3a8a;
+        font-size: 14px;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Coach Portal</h1>
+      <p class="callout">Log in with your phone and password to manage your coaching preferences.</p>
+
+      <section id="login-section">
+        <h2>Log in</h2>
+        <form id="login-form">
+          <label for="login-phone">Phone (E.164)</label>
+          <input id="login-phone" name="phone" placeholder="+15555550123" required />
+
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" required />
+
+          <button type="submit">Log in</button>
+        </form>
+      </section>
+
+      <section id="set-password-section" class="hidden">
+        <h2>Set your password</h2>
+        <form id="set-password-form">
+          <label for="set-phone">Phone (E.164)</label>
+          <input id="set-phone" name="phone" placeholder="+15555550123" required />
+
+          <label for="set-password">New password</label>
+          <input id="set-password" name="password" type="password" required />
+
+          <button type="submit" class="secondary">Save password</button>
+        </form>
+      </section>
+
+      <section id="preferences-section" class="hidden">
+        <h2>Preferences</h2>
+        <form id="preferences-form">
+          <label for="pref-name">Name (optional)</label>
+          <input id="pref-name" name="name" placeholder="Ava" />
+
+          <div class="row">
+            <div>
+              <label for="pref-hour">Preferred call hour</label>
+              <select id="pref-hour" name="preferredCallHour" aria-label="Preferred call hour"></select>
+            </div>
+            <div>
+              <label for="pref-minute">Preferred call minute</label>
+              <select id="pref-minute" name="preferredCallMinute" aria-label="Preferred call minute">
+                <option value="0">00</option>
+                <option value="15">15</option>
+                <option value="30">30</option>
+                <option value="45">45</option>
+              </select>
+            </div>
+          </div>
+
+          <label for="pref-timezone">Timezone</label>
+          <select id="pref-timezone" name="timezone" aria-label="Timezone">
+            <option value="America/Phoenix">America/Phoenix</option>
+            <option value="America/Los_Angeles">America/Los_Angeles</option>
+            <option value="America/Denver">America/Denver</option>
+            <option value="America/Chicago">America/Chicago</option>
+            <option value="America/New_York">America/New_York</option>
+            <option value="Europe/London">Europe/London</option>
+          </select>
+
+          <label for="pref-level">Difficulty</label>
+          <select id="pref-level" name="levelEstimate" aria-label="Difficulty">
+            <option value="A0">A0 - brand new</option>
+            <option value="A1">A1 - beginner</option>
+            <option value="A2">A2 - early intermediate</option>
+            <option value="B1">B1 - intermediate</option>
+          </select>
+
+          <label for="pref-prompt">Preset prompt</label>
+          <select id="pref-prompt" name="duolingoUnit" aria-label="Preset prompt">
+            <option value="">No specific prompt</option>
+            <option value="Warm-up conversation">Warm-up conversation</option>
+            <option value="Travel basics">Travel basics</option>
+            <option value="Ordering food">Ordering food</option>
+            <option value="Work introductions">Work introductions</option>
+            <option value="Duolingo Unit 1">Duolingo Unit 1</option>
+            <option value="Duolingo Unit 2">Duolingo Unit 2</option>
+            <option value="Duolingo Unit 3">Duolingo Unit 3</option>
+          </select>
+
+          <button type="submit">Save preferences</button>
+        </form>
+      </section>
+
+      <div id="status" class="callout hidden"></div>
+    </main>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const loginSection = document.getElementById("login-section");
+      const setPasswordSection = document.getElementById("set-password-section");
+      const preferencesSection = document.getElementById("preferences-section");
+      const loginForm = document.getElementById("login-form");
+      const setPasswordForm = document.getElementById("set-password-form");
+      const preferencesForm = document.getElementById("preferences-form");
+      const hourSelect = document.getElementById("pref-hour");
+      const minuteSelect = document.getElementById("pref-minute");
+      const timezoneSelect = document.getElementById("pref-timezone");
+      const levelSelect = document.getElementById("pref-level");
+      const promptSelect = document.getElementById("pref-prompt");
+      const nameInput = document.getElementById("pref-name");
+
+      for (let hour = 0; hour < 24; hour += 1) {
+        const option = document.createElement("option");
+        option.value = String(hour);
+        option.textContent = String(hour).padStart(2, "0");
+        hourSelect.appendChild(option);
+      }
+
+      function setStatus(message, isError = false) {
+        statusEl.textContent = message;
+        statusEl.classList.remove("hidden");
+        statusEl.style.background = isError ? "#fee2e2" : "#eff6ff";
+        statusEl.style.color = isError ? "#991b1b" : "#1e3a8a";
+      }
+
+      function getAuthHeader() {
+        return sessionStorage.getItem("coachAuth");
+      }
+
+      function setAuthHeader(phone, password) {
+        const encoded = btoa(\`\${phone}:\${password}\`);
+        sessionStorage.setItem("coachAuth", \`Basic \${encoded}\`);
+      }
+
+      async function loadProfile() {
+        const auth = getAuthHeader();
+        if (!auth) return;
+        const response = await fetch("/coach/me", { headers: { Authorization: auth } });
+        if (!response.ok) {
+          setStatus("Please log in again to continue.", true);
+          sessionStorage.removeItem("coachAuth");
+          preferencesSection.classList.add("hidden");
+          loginSection.classList.remove("hidden");
+          return;
+        }
+        const user = await response.json();
+        nameInput.value = user.name || "";
+        hourSelect.value = String(user.preferred_call_hour_local);
+        minuteSelect.value = String(user.preferred_call_minute_local);
+        timezoneSelect.value = user.timezone;
+        levelSelect.value = user.level_estimate;
+        promptSelect.value = user.duolingo_unit || "";
+        preferencesSection.classList.remove("hidden");
+        loginSection.classList.add("hidden");
+        setPasswordSection.classList.add("hidden");
+      }
+
+      loginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const phone = document.getElementById("login-phone").value;
+        const password = document.getElementById("login-password").value;
+        const response = await fetch("/coach/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone, password }),
+        });
+        if (response.status === 409) {
+          setStatus("Password missing. Set one to continue.", true);
+          setPasswordSection.classList.remove("hidden");
+          return;
+        }
+        if (!response.ok) {
+          setStatus("Login failed. Check your phone and password.", true);
+          return;
+        }
+        setAuthHeader(phone, password);
+        setStatus("Logged in.");
+        await loadProfile();
+      });
+
+      setPasswordForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const phone = document.getElementById("set-phone").value;
+        const password = document.getElementById("set-password").value;
+        const response = await fetch("/coach/set-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone, password }),
+        });
+        if (!response.ok) {
+          setStatus("Failed to set password.", true);
+          return;
+        }
+        setAuthHeader(phone, password);
+        setStatus("Password saved. You're logged in.");
+        await loadProfile();
+      });
+
+      preferencesForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const auth = getAuthHeader();
+        if (!auth) {
+          setStatus("Please log in to save preferences.", true);
+          return;
+        }
+        const payload = {
+          name: nameInput.value || undefined,
+          timezone: timezoneSelect.value,
+          preferredCallHour: Number(hourSelect.value),
+          preferredCallMinute: Number(minuteSelect.value),
+          levelEstimate: levelSelect.value,
+          duolingoUnit: promptSelect.value || null,
+        };
+        const response = await fetch("/coach/preferences", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: auth },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          setStatus("Failed to save preferences.", true);
+          return;
+        }
+        setStatus("Preferences saved.");
+      });
+
+      const existingAuth = getAuthHeader();
+      if (existingAuth) {
+        loadProfile();
+      }
+    </script>
+  </body>
+</html>`);
 });
 
 coachRouter.get("/coach/signup", (_req, res) => {
@@ -235,6 +718,9 @@ coachRouter.get("/coach/signup", (_req, res) => {
 
         <label for="duolingoUnit">Duolingo unit (optional)</label>
         <input id="duolingoUnit" name="duolingoUnit" placeholder="Unit 4" />
+
+        <label for="password">Set a password</label>
+        <input id="password" name="password" type="password" required />
 
         <div class="button-row">
           <button type="submit">Sign up</button>
