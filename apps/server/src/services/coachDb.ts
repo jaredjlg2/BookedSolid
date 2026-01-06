@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { createRequire } from "module";
 import { env } from "../config/env";
@@ -113,7 +114,8 @@ function getStore(): CoachStore {
 
 function getDb(): DatabaseHandle {
   if (!db) {
-    const dbPath = env.DB_PATH ?? path.join(process.cwd(), "data", "coach.sqlite");
+    const dbPath =
+      env.DB_PATH ?? path.join(os.homedir() || process.cwd(), ".coach", "data", "coach.sqlite");
     ensureDbPath(dbPath);
     const driver = loadDatabaseDriver();
     db = driver.create(dbPath);
