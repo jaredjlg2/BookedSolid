@@ -140,6 +140,12 @@ coachRouter.post("/coach/signup", (req, res) => {
     password_hash: passwordHash,
   });
 
+  const prefersHtml =
+    req.accepts(["html", "json"]) === "html" && !req.is("application/json");
+  if (prefersHtml) {
+    return res.redirect(303, "/coach/portal");
+  }
+
   return res.json(user);
 });
 
