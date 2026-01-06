@@ -729,10 +729,10 @@ coachRouter.get("/coach/portal", (_req, res) => {
         const payload = {
           phone: currentPhone,
           name: nameInput.value || undefined,
-          preferredCallTime: `${hourSelect.value.padStart(2, "0")}:${minuteSelect.value.padStart(
+          preferredCallTime: \`\${hourSelect.value.padStart(2, "0")}:\${minuteSelect.value.padStart(
             2,
             "0"
-          )}`,
+          )}\`,
           timezone: timezoneSelect.value,
           duolingoUnit: promptSelect.value || undefined,
           callPrompt: callPromptInput.value || undefined,
