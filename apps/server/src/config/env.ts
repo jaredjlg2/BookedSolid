@@ -17,12 +17,17 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_MODEL: z.string().optional(),
   OPENAI_INSTRUCTION_MODEL: z.string().optional(),
 
-  // Add these later when you wire scheduling
+  // Booking + calendar
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().optional(),
   GOOGLE_REFRESH_TOKEN: z.string().optional(),
-  CALENDAR_ID: z.string().optional(),
+  GOOGLE_CALENDAR_ID: z.string().optional(),
+  BUSINESS_NAME: z.string().optional(),
+  DEFAULT_TIMEZONE: z.string().optional(),
+  APPT_DURATION_MINUTES: z.coerce.number().optional(),
+  APPT_BUFFER_MINUTES: z.coerce.number().optional(),
+  BOOKING_DRY_RUN: z.coerce.boolean().optional(),
 });
 
 export const env = EnvSchema.parse(process.env);

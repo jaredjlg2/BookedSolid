@@ -2,6 +2,10 @@
 
 This repo hosts the Express + Twilio + OpenAI Realtime server for inbound receptionist calls, plus a Spanish Daily Coach outbound calling mode.
 
+## Booking (Google Calendar + SMS)
+
+See [apps/server/BOOKING.md](apps/server/BOOKING.md) for setup instructions and required env vars.
+
 ## Spanish Daily Coach (Outbound Calling MVP)
 
 ### Required env vars

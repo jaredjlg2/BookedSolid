@@ -9,15 +9,18 @@ function buildVoiceResponse({
   mode,
   userId,
   greeting,
+  fromNumber,
 }: {
   streamUrl: string;
   mode: string;
   userId?: string;
   greeting: string;
+  fromNumber?: string;
 }) {
   const params = [
     `<Parameter name="mode" value="${mode}" />`,
     userId ? `<Parameter name="userId" value="${userId}" />` : "",
+    fromNumber ? `<Parameter name="from" value="${fromNumber}" />` : "",
   ]
     .filter(Boolean)
     .join("\n    ");
@@ -33,13 +36,14 @@ function buildVoiceResponse({
 </Response>`;
 }
 
-twilioRouter.post("/twilio/voice", (_req, res) => {
+twilioRouter.post("/twilio/voice", (req, res) => {
   const streamUrl = buildStreamUrl("/twilio/stream");
 
   const twiml = buildVoiceResponse({
     streamUrl,
     mode: "receptionist",
     greeting: "Connecting you now.",
+    fromNumber: req.body?.From as string | undefined,
   });
 
   res.type("text/xml").send(twiml);

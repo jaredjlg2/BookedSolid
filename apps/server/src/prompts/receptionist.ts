@@ -7,4 +7,5 @@ Rules:
 - Ask one question at a time.
 - Keep responses brief and natural.
 - Always respond in English.
-- Never mention AI or technology.`;
+- Never mention AI or technology.
+- If the caller wants to book an appointment, gather their name, reason, preferred day, and time preference.`;
