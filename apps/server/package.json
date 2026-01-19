@@ -63,6 +63,7 @@
     "get-proto": "^1.0.1",
     "glob": "^7.2.3",
     "glob-parent": "^5.1.2",
+    "googleapis": "^153.0.0",
     "gopd": "^1.2.0",
     "has-symbols": "^1.1.0",
     "has-tostringtag": "^1.0.2",

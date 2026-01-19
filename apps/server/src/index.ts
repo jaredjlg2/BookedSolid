@@ -3,6 +3,9 @@ import "./config/env";
 import http from "http";
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
 import { healthRouter } from "./routes/health";
 import { twilioRouter } from "./routes/twilio";
 import { coachRouter } from "./routes/coach";
@@ -10,12 +13,29 @@ import { connectOpenAIRealtime } from "./services/realtimeBridge";
 import { receptionistPrompt } from "./prompts/receptionist";
 import { spanishCoachPrompt } from "./prompts/spanishCoach";
 import { startCoachScheduler } from "./services/coachScheduler";
+import { env } from "./config/env";
+import { getCalendarAdapter } from "./services/calendar";
+import {
+  detectBookingIntent,
+  parseDatePreference,
+  parseName,
+  parseReason,
+  parseSlotChoice,
+  parseTimePreference,
+  type DatePreference,
+  type ParsedTimePreference,
+} from "./services/booking/bookingParser";
+import { findAvailableSlots, type TimePreference } from "./services/booking/slotFinder";
+import { sendSms } from "./services/twilioSms";
 import {
   setUserInactiveById,
   updateCallLogBySid,
   updateUserLevel,
   getUserById,
 } from "./services/coachDb";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -106,11 +126,29 @@ wss.on("connection", (twilioWs) => {
   let streamSid: string | null = null;
   let callSid: string | null = null;
   let userId: number | null = null;
+  let callerPhone: string | null = null;
   let mode: "receptionist" | "spanish_coach" = "receptionist";
   let pendingGreeting = false;
   let openaiWs: WebSocket | null = null;
   let assistantBuffer = "";
   let optedOut = false;
+  const bookingState: {
+    active: boolean;
+    name: string | null;
+    reason: string | null;
+    datePreference: DatePreference | null;
+    timePreference: ParsedTimePreference | null;
+    offeredSlots: Date[];
+    awaitingChoice: boolean;
+  } = {
+    active: false,
+    name: null,
+    reason: null,
+    datePreference: null,
+    timePreference: null,
+    offeredSlots: [],
+    awaitingChoice: false,
+  };
 
   const metrics = {
     simplifications: 0,
@@ -180,6 +218,221 @@ wss.on("connection", (twilioWs) => {
     }
   };
 
+  const sendAssistantMessage = (message: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions: message,
+        },
+      })
+    );
+  };
+
+  const formatSlot = (date: Date) => {
+    const tz = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
+    return dayjs(date).tz(tz).format("dddd [at] h:mm A");
+  };
+
+  const resolveWindowForPreference = (preference: DatePreference | null) => {
+    const tz = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
+    const now = dayjs().tz(tz);
+    if (!preference) {
+      return {
+        windowStart: now.toDate(),
+        windowEnd: now.add(7, "day").toDate(),
+        label: "the next week",
+      };
+    }
+    if (preference.type === "today") {
+      return {
+        windowStart: now.toDate(),
+        windowEnd: now.endOf("day").toDate(),
+        label: "today",
+      };
+    }
+    if (preference.type === "tomorrow") {
+      const target = now.add(1, "day").startOf("day");
+      return {
+        windowStart: target.toDate(),
+        windowEnd: target.endOf("day").toDate(),
+        label: "tomorrow",
+      };
+    }
+    if (preference.type === "weekday") {
+      let target = now.startOf("day");
+      for (let i = 0; i < 7; i += 1) {
+        const candidate = now.add(i, "day").startOf("day");
+        if (candidate.day() === preference.weekday) {
+          target = candidate;
+          break;
+        }
+      }
+      return {
+        windowStart: target.toDate(),
+        windowEnd: target.endOf("day").toDate(),
+        label: target.format("dddd"),
+      };
+    }
+    const parsed = dayjs(preference.dateISO).tz(tz);
+    const target = parsed.isBefore(now, "day") ? parsed.add(1, "year") : parsed;
+    return {
+      windowStart: target.startOf("day").toDate(),
+      windowEnd: target.endOf("day").toDate(),
+      label: target.format("MMMM D"),
+    };
+  };
+
+  const buildTimePreference = (pref: ParsedTimePreference | null): TimePreference => {
+    if (!pref) return { type: "any" };
+    if (pref.type === "morning") return { type: "morning" };
+    if (pref.type === "afternoon") return { type: "afternoon" };
+    if (pref.type === "specific") return { type: "specific", hour: pref.hour, minute: pref.minute };
+    return { type: "any" };
+  };
+
+  const processReceptionistTranscript = async (text: string) => {
+    const normalized = text.trim();
+    if (!normalized) return;
+
+    if (!bookingState.active) {
+      if (!detectBookingIntent(normalized)) return;
+      bookingState.active = true;
+    }
+
+    if (!bookingState.name) bookingState.name = parseName(normalized);
+    if (!bookingState.reason && bookingState.name) {
+      bookingState.reason = parseReason(normalized);
+    }
+    if (!bookingState.datePreference) {
+      bookingState.datePreference = parseDatePreference(
+        normalized,
+        env.DEFAULT_TIMEZONE ?? "America/Phoenix"
+      );
+    }
+    if (!bookingState.timePreference) bookingState.timePreference = parseTimePreference(normalized);
+
+    if (bookingState.awaitingChoice) {
+      const choice = parseSlotChoice(normalized);
+      if (!choice || !bookingState.offeredSlots[choice - 1]) {
+        sendAssistantMessage("Please say option one or option two.");
+        return;
+      }
+
+      const selectedStart = bookingState.offeredSlots[choice - 1];
+      const durationMinutes = env.APPT_DURATION_MINUTES ?? 30;
+      const selectedEnd = new Date(selectedStart.getTime() + durationMinutes * 60 * 1000);
+      const timezoneName = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
+      const businessName = env.BUSINESS_NAME ?? "our business";
+      const summary = `Caller requested: ${bookingState.reason ?? "appointment"}.`;
+      const description = [
+        `Phone: ${callerPhone ?? "unknown"}`,
+        `Reason: ${bookingState.reason ?? "Not provided"}`,
+        `Summary: ${summary}`,
+      ].join("\n");
+
+      try {
+        const adapter = getCalendarAdapter();
+        await adapter.createEvent(selectedStart, selectedEnd, {
+          title: `Call Booking – ${bookingState.name ?? "Caller"}`,
+          description,
+          location: "Phone call",
+          timezone: timezoneName,
+        });
+      } catch (error) {
+        console.log("Booking error:", error);
+        sendAssistantMessage("Sorry, I ran into a scheduling issue. Let me try again later.");
+        return;
+      }
+
+      if (callerPhone) {
+        if (env.BOOKING_DRY_RUN) {
+          console.log("BOOKING_DRY_RUN enabled. Skipping SMS send.", {
+            to: callerPhone,
+            time: selectedStart.toISOString(),
+          });
+        } else {
+          try {
+            const formatted = formatSlot(selectedStart);
+            await sendSms(
+              callerPhone,
+              `You're booked with ${businessName} for ${formatted}. Reply to this text if you need to reschedule.`
+            );
+          } catch (error) {
+            console.log("SMS send error:", error);
+          }
+        }
+      }
+
+      sendAssistantMessage(
+        `You're booked for ${formatSlot(selectedStart)}. You'll get a confirmation text from ${businessName}.`
+      );
+      bookingState.active = false;
+      bookingState.awaitingChoice = false;
+      bookingState.offeredSlots = [];
+      bookingState.name = null;
+      bookingState.reason = null;
+      bookingState.datePreference = null;
+      bookingState.timePreference = null;
+      return;
+    }
+
+    if (!bookingState.name) {
+      sendAssistantMessage("Sure — may I have your name?");
+      return;
+    }
+    if (!bookingState.reason) {
+      sendAssistantMessage(`Thanks, ${bookingState.name}. What’s the reason for the appointment?`);
+      return;
+    }
+    if (!bookingState.datePreference) {
+      sendAssistantMessage("What day works best? Today, tomorrow, or another weekday?");
+      return;
+    }
+    if (!bookingState.timePreference) {
+      sendAssistantMessage("Do you prefer morning, afternoon, or a specific time?");
+      return;
+    }
+
+    const { windowStart, windowEnd, label } = resolveWindowForPreference(bookingState.datePreference);
+    let busyIntervals = [];
+    try {
+      const adapter = getCalendarAdapter();
+      busyIntervals = await adapter.getAvailability(windowStart, windowEnd);
+    } catch (error) {
+      console.log("Availability error:", error);
+      sendAssistantMessage("Sorry, I can't access the schedule right now.");
+      return;
+    }
+
+    const slots = findAvailableSlots({
+      busyIntervals,
+      windowStart,
+      windowEnd,
+      durationMinutes: env.APPT_DURATION_MINUTES ?? 30,
+      bufferMinutes: env.APPT_BUFFER_MINUTES ?? 10,
+      timePreference: buildTimePreference(bookingState.timePreference),
+      timezone: env.DEFAULT_TIMEZONE ?? "America/Phoenix",
+    });
+
+    if (slots.length < 2) {
+      sendAssistantMessage(
+        `I’m not seeing two openings ${label}. Would you like me to check another day?`
+      );
+      bookingState.timePreference = null;
+      bookingState.datePreference = null;
+      return;
+    }
+
+    bookingState.offeredSlots = slots;
+    bookingState.awaitingChoice = true;
+    sendAssistantMessage(
+      `I can do ${formatSlot(slots[0])} or ${formatSlot(slots[1])}. Which works better?`
+    );
+  };
+
   // --- Twilio -> OpenAI ---
   twilioWs.on("message", (data) => {
     const msg = safeJsonParse(data);
@@ -191,6 +444,7 @@ wss.on("connection", (twilioWs) => {
       const params = msg.start?.customParameters ?? {};
       mode = params.mode === "spanish_coach" ? "spanish_coach" : "receptionist";
       userId = params.userId ? Number(params.userId) : null;
+      callerPhone = typeof params.from === "string" ? params.from : null;
 
       console.log("Stream start", msg.start);
 
@@ -256,7 +510,13 @@ wss.on("connection", (twilioWs) => {
 
           const transcript = extractTranscript(openaiMsg);
           if (transcript) {
-            handleTranscript(transcript);
+            if (mode === "spanish_coach") {
+              handleTranscript(transcript);
+            } else {
+              processReceptionistTranscript(transcript).catch((error) =>
+                console.log("Booking flow error:", error)
+              );
+            }
           }
         });
 
