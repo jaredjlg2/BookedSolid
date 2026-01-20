@@ -58,6 +58,23 @@ ngrok http 3000
 3. Set `PUBLIC_BASE_URL` to the HTTPS ngrok URL.
 4. Configure Twilio voice webhook to `POST /twilio/voice`.
 
+## Troubleshooting
+
+### Error: Cannot find module 'googleapis'
+
+This means dependencies haven't been installed in `apps/server`. Install them and try again:
+
+```
+cd apps/server
+npm install
+```
+
+If the error persists, confirm the dependency is present:
+
+```
+npm install googleapis
+```
+
 ## Example call flow
 
 1. Caller: “I’d like to book an appointment.”
