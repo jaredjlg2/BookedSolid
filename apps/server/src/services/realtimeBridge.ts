@@ -36,6 +36,53 @@ export function connectOpenAIRealtime(options: RealtimeOptions = {}): WebSocket 
           input_audio_transcription: { model: "whisper-1" },
           voice: "verse",
           turn_detection: { type: "server_vad" },
+          tools: [
+            {
+              type: "function",
+              name: "booking_check_availability",
+              description: "Check calendar availability and return up to two open slots.",
+              parameters: {
+                type: "object",
+                properties: {
+                  dayISO: {
+                    type: "string",
+                    description: "Optional day in ISO format (YYYY-MM-DD) to check.",
+                  },
+                  timezone: {
+                    type: "string",
+                    description: "IANA timezone name (e.g., America/Phoenix).",
+                  },
+                  window: {
+                    type: "object",
+                    properties: {
+                      startHour: { type: "number" },
+                      endHour: { type: "number" },
+                    },
+                    description: "Optional business hours window.",
+                  },
+                  durationMinutes: { type: "number" },
+                },
+                required: [],
+              },
+            },
+            {
+              type: "function",
+              name: "booking_create_appointment",
+              description: "Create a calendar appointment for a confirmed slot.",
+              parameters: {
+                type: "object",
+                properties: {
+                  startISO: { type: "string" },
+                  endISO: { type: "string" },
+                  name: { type: "string" },
+                  reason: { type: "string" },
+                  phone: { type: "string" },
+                  timezone: { type: "string" },
+                },
+                required: ["startISO", "endISO", "name", "reason"],
+              },
+            },
+          ],
         },
       })
     );

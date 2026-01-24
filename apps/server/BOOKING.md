@@ -81,3 +81,8 @@ npm install googleapis
 2. Assistant: asks for name → reason → day → time preference.
 3. Assistant: offers two time slots.
 4. Caller picks one → calendar event created + SMS sent.
+
+## How to test
+
+1. Set `BOOKING_DRY_RUN=true`, call the Twilio number, and say “Book an appointment tomorrow afternoon.” Verify logs show availability and a dry-run create event.
+2. Set `BOOKING_DRY_RUN=false`, repeat the call, and verify the event appears in Google Calendar.

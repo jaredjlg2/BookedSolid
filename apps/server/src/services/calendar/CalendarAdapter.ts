@@ -12,5 +12,9 @@ export interface CalendarEventDetails {
 
 export interface CalendarAdapter {
   getAvailability(windowStart: Date, windowEnd: Date): Promise<BusyInterval[]>;
-  createEvent(start: Date, end: Date, details: CalendarEventDetails): Promise<void>;
+  createEvent(
+    start: Date,
+    end: Date,
+    details: CalendarEventDetails
+  ): Promise<{ eventId?: string; htmlLink?: string } | null>;
 }
