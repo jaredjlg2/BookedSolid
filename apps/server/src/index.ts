@@ -3,9 +3,6 @@ import "./config/env.js";
 import http from "http";
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
 import { healthRouter } from "./routes/health.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { coachRouter } from "./routes/coach.js";
@@ -13,29 +10,19 @@ import { connectOpenAIRealtime } from "./services/realtimeBridge.js";
 import { receptionistPrompt } from "./prompts/receptionist.js";
 import { spanishCoachPrompt } from "./prompts/spanishCoach.js";
 import { startCoachScheduler } from "./services/coachScheduler.js";
-import { env } from "./config/env.js";
-import { getCalendarAdapter } from "./services/calendar/index.js";
 import {
-  detectBookingIntent,
-  parseDatePreference,
-  parseName,
-  parseReason,
-  parseSlotChoice,
-  parseTimePreference,
-  type DatePreference,
-  type ParsedTimePreference,
-} from "./services/booking/bookingParser.js";
-import { findAvailableSlots, type TimePreference } from "./services/booking/slotFinder.js";
-import { sendSms } from "./services/twilioSms.js";
+  BookingToolError,
+  checkAvailability,
+  createAppointment,
+  type BookingCheckAvailabilityInput,
+  type BookingCreateAppointmentInput,
+} from "./services/booking/bookingTools.js";
 import {
   setUserInactiveById,
   updateCallLogBySid,
   updateUserLevel,
   getUserById,
 } from "./services/coachDb.js";
-
-dayjs.extend(utc);
-dayjs.extend(timezone);
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -133,23 +120,6 @@ wss.on("connection", (twilioWs) => {
   let openaiWs: WebSocket | null = null;
   let assistantBuffer = "";
   let optedOut = false;
-  const bookingState: {
-    active: boolean;
-    name: string | null;
-    reason: string | null;
-    datePreference: DatePreference | null;
-    timePreference: ParsedTimePreference | null;
-    offeredSlots: Date[];
-    awaitingChoice: boolean;
-  } = {
-    active: false,
-    name: null,
-    reason: null,
-    datePreference: null,
-    timePreference: null,
-    offeredSlots: [],
-    awaitingChoice: false,
-  };
 
   const metrics = {
     simplifications: 0,
@@ -219,219 +189,90 @@ wss.on("connection", (twilioWs) => {
     }
   };
 
-  const sendAssistantMessage = (message: string) => {
+  const sendToolOutput = (toolCallId: string, output: unknown) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     openaiWs.send(
       JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions: message,
+        type: "conversation.item.create",
+        item: {
+          type: "tool_output",
+          tool_call_id: toolCallId,
+          output: JSON.stringify(output),
         },
       })
     );
   };
 
-  const formatSlot = (date: Date) => {
-    const tz = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
-    return dayjs(date).tz(tz).format("dddd [at] h:mm A");
-  };
-
-  const resolveWindowForPreference = (preference: DatePreference | null) => {
-    const tz = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
-    const now = dayjs().tz(tz);
-    if (!preference) {
-      return {
-        windowStart: now.toDate(),
-        windowEnd: now.add(7, "day").toDate(),
-        label: "the next week",
-      };
-    }
-    if (preference.type === "today") {
-      return {
-        windowStart: now.toDate(),
-        windowEnd: now.endOf("day").toDate(),
-        label: "today",
-      };
-    }
-    if (preference.type === "tomorrow") {
-      const target = now.add(1, "day").startOf("day");
-      return {
-        windowStart: target.toDate(),
-        windowEnd: target.endOf("day").toDate(),
-        label: "tomorrow",
-      };
-    }
-    if (preference.type === "weekday") {
-      let target = now.startOf("day");
-      for (let i = 0; i < 7; i += 1) {
-        const candidate = now.add(i, "day").startOf("day");
-        if (candidate.day() === preference.weekday) {
-          target = candidate;
-          break;
-        }
-      }
-      return {
-        windowStart: target.toDate(),
-        windowEnd: target.endOf("day").toDate(),
-        label: target.format("dddd"),
-      };
-    }
-    const parsed = dayjs(preference.dateISO).tz(tz);
-    const target = parsed.isBefore(now, "day") ? parsed.add(1, "year") : parsed;
-    return {
-      windowStart: target.startOf("day").toDate(),
-      windowEnd: target.endOf("day").toDate(),
-      label: target.format("MMMM D"),
-    };
-  };
-
-  const buildTimePreference = (pref: ParsedTimePreference | null): TimePreference => {
-    if (!pref) return { type: "any" };
-    if (pref.type === "morning") return { type: "morning" };
-    if (pref.type === "afternoon") return { type: "afternoon" };
-    if (pref.type === "specific") return { type: "specific", hour: pref.hour, minute: pref.minute };
-    return { type: "any" };
-  };
-
-  const processReceptionistTranscript = async (text: string) => {
-    const normalized = text.trim();
-    if (!normalized) return;
-
-    if (!bookingState.active) {
-      if (!detectBookingIntent(normalized)) return;
-      bookingState.active = true;
-    }
-
-    if (!bookingState.name) bookingState.name = parseName(normalized);
-    if (!bookingState.reason && bookingState.name) {
-      bookingState.reason = parseReason(normalized);
-    }
-    if (!bookingState.datePreference) {
-      bookingState.datePreference = parseDatePreference(
-        normalized,
-        env.DEFAULT_TIMEZONE ?? "America/Phoenix"
-      );
-    }
-    if (!bookingState.timePreference) bookingState.timePreference = parseTimePreference(normalized);
-
-    if (bookingState.awaitingChoice) {
-      const choice = parseSlotChoice(normalized);
-      if (!choice || !bookingState.offeredSlots[choice - 1]) {
-        sendAssistantMessage("Please say option one or option two.");
-        return;
-      }
-
-      const selectedStart = bookingState.offeredSlots[choice - 1];
-      const durationMinutes = env.APPT_DURATION_MINUTES ?? 30;
-      const selectedEnd = new Date(selectedStart.getTime() + durationMinutes * 60 * 1000);
-      const timezoneName = env.DEFAULT_TIMEZONE ?? "America/Phoenix";
-      const businessName = env.BUSINESS_NAME ?? "our business";
-      const summary = `Caller requested: ${bookingState.reason ?? "appointment"}.`;
-      const description = [
-        `Phone: ${callerPhone ?? "unknown"}`,
-        `Reason: ${bookingState.reason ?? "Not provided"}`,
-        `Summary: ${summary}`,
-      ].join("\n");
-
+  const handleToolCall = async (toolCall: {
+    name: string;
+    callId: string;
+    arguments: unknown;
+  }) => {
+    let parsedArgs: Record<string, unknown> = {};
+    if (typeof toolCall.arguments === "string" && toolCall.arguments.trim().length > 0) {
       try {
-        const adapter = getCalendarAdapter();
-        await adapter.createEvent(selectedStart, selectedEnd, {
-          title: `Call Booking – ${bookingState.name ?? "Caller"}`,
-          description,
-          location: "Phone call",
-          timezone: timezoneName,
-        });
+        parsedArgs = JSON.parse(toolCall.arguments);
       } catch (error) {
-        console.log("Booking error:", error);
-        sendAssistantMessage("Sorry, I ran into a scheduling issue. Let me try again later.");
+        sendToolOutput(toolCall.callId, {
+          error: { code: "invalid_arguments", message: "Could not parse tool arguments." },
+        });
+        console.log("Tool arguments parse error:", error);
+        return;
+      }
+    } else if (typeof toolCall.arguments === "object" && toolCall.arguments !== null) {
+      parsedArgs = toolCall.arguments as Record<string, unknown>;
+    }
+
+    try {
+      if (toolCall.name === "booking_check_availability") {
+        const result = await checkAvailability(parsedArgs as BookingCheckAvailabilityInput);
+        sendToolOutput(toolCall.callId, result);
+        return;
+      }
+      if (toolCall.name === "booking_create_appointment") {
+        const result = await createAppointment(parsedArgs as BookingCreateAppointmentInput);
+        sendToolOutput(toolCall.callId, result);
         return;
       }
 
-      if (callerPhone) {
-        if (env.BOOKING_DRY_RUN) {
-          console.log("BOOKING_DRY_RUN enabled. Skipping SMS send.", {
-            to: callerPhone,
-            time: selectedStart.toISOString(),
-          });
-        } else {
-          try {
-            const formatted = formatSlot(selectedStart);
-            await sendSms(
-              callerPhone,
-              `You're booked with ${businessName} for ${formatted}. Reply to this text if you need to reschedule.`
-            );
-          } catch (error) {
-            console.log("SMS send error:", error);
-          }
-        }
-      }
-
-      sendAssistantMessage(
-        `You're booked for ${formatSlot(selectedStart)}. You'll get a confirmation text from ${businessName}.`
-      );
-      bookingState.active = false;
-      bookingState.awaitingChoice = false;
-      bookingState.offeredSlots = [];
-      bookingState.name = null;
-      bookingState.reason = null;
-      bookingState.datePreference = null;
-      bookingState.timePreference = null;
-      return;
-    }
-
-    if (!bookingState.name) {
-      sendAssistantMessage("Sure — may I have your name?");
-      return;
-    }
-    if (!bookingState.reason) {
-      sendAssistantMessage(`Thanks, ${bookingState.name}. What’s the reason for the appointment?`);
-      return;
-    }
-    if (!bookingState.datePreference) {
-      sendAssistantMessage("What day works best? Today, tomorrow, or another weekday?");
-      return;
-    }
-    if (!bookingState.timePreference) {
-      sendAssistantMessage("Do you prefer morning, afternoon, or a specific time?");
-      return;
-    }
-
-    const { windowStart, windowEnd, label } = resolveWindowForPreference(bookingState.datePreference);
-    let busyIntervals = [];
-    try {
-      const adapter = getCalendarAdapter();
-      busyIntervals = await adapter.getAvailability(windowStart, windowEnd);
+      sendToolOutput(toolCall.callId, {
+        error: { code: "unknown_tool", message: `Unknown tool: ${toolCall.name}` },
+      });
     } catch (error) {
-      console.log("Availability error:", error);
-      sendAssistantMessage("Sorry, I can't access the schedule right now.");
-      return;
+      if (error instanceof BookingToolError) {
+        sendToolOutput(toolCall.callId, {
+          error: { code: error.code, message: error.message },
+        });
+        return;
+      }
+      sendToolOutput(toolCall.callId, {
+        error: { code: "booking_error", message: "Booking tool failed." },
+      });
+      console.log("Tool execution error:", error);
+    }
+  };
+
+  const extractToolCall = (message: any) => {
+    if (message?.type === "response.function_call_arguments.done") {
+      return {
+        name: message.name as string,
+        callId: message.call_id as string,
+        arguments: message.arguments as string,
+      };
     }
 
-    const slots = findAvailableSlots({
-      busyIntervals,
-      windowStart,
-      windowEnd,
-      durationMinutes: env.APPT_DURATION_MINUTES ?? 30,
-      bufferMinutes: env.APPT_BUFFER_MINUTES ?? 10,
-      timePreference: buildTimePreference(bookingState.timePreference),
-      timezone: env.DEFAULT_TIMEZONE ?? "America/Phoenix",
-    });
-
-    if (slots.length < 2) {
-      sendAssistantMessage(
-        `I’m not seeing two openings ${label}. Would you like me to check another day?`
-      );
-      bookingState.timePreference = null;
-      bookingState.datePreference = null;
-      return;
+    if (
+      message?.type === "response.output_item.done" &&
+      (message?.item?.type === "function_call" || message?.item?.type === "tool_call")
+    ) {
+      return {
+        name: message.item.name as string,
+        callId: (message.item.call_id ?? message.item.tool_call_id) as string,
+        arguments: message.item.arguments as string,
+      };
     }
 
-    bookingState.offeredSlots = slots;
-    bookingState.awaitingChoice = true;
-    sendAssistantMessage(
-      `I can do ${formatSlot(slots[0])} or ${formatSlot(slots[1])}. Which works better?`
-    );
+    return null;
   };
 
   // --- Twilio -> OpenAI ---
@@ -481,6 +322,11 @@ wss.on("connection", (twilioWs) => {
             if (openaiMsg.type === "error") console.log("OpenAI error:", openaiMsg.error);
           }
 
+          const toolCall = extractToolCall(openaiMsg);
+          if (toolCall) {
+            handleToolCall(toolCall).catch((error) => console.log("Tool handler error:", error));
+          }
+
           if (
             (openaiMsg.type === "response.audio.delta" ||
               openaiMsg.type === "output_audio_buffer.delta") &&
@@ -513,10 +359,6 @@ wss.on("connection", (twilioWs) => {
           if (transcript) {
             if (mode === "spanish_coach") {
               handleTranscript(transcript);
-            } else {
-              processReceptionistTranscript(transcript).catch((error) =>
-                console.log("Booking flow error:", error)
-              );
             }
           }
         });

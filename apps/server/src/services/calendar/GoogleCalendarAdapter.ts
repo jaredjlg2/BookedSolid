@@ -51,20 +51,23 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       }));
   }
 
-  async createEvent(start: Date, end: Date, details: CalendarEventDetails): Promise<void> {
+  async createEvent(
+    start: Date,
+    end: Date,
+    details: CalendarEventDetails
+  ): Promise<{ eventId?: string; htmlLink?: string } | null> {
     if (env.BOOKING_DRY_RUN) {
       console.log("BOOKING_DRY_RUN enabled. Skipping calendar create.", {
         start: start.toISOString(),
         end: end.toISOString(),
-        details,
       });
-      return;
+      return null;
     }
 
     const auth = buildOAuthClient();
     const calendar = google.calendar({ version: "v3", auth });
 
-    await calendar.events.insert({
+    const response = await calendar.events.insert({
       calendarId: this.calendarId,
       requestBody: {
         summary: details.title,
@@ -74,5 +77,10 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
         end: { dateTime: end.toISOString(), timeZone: details.timezone },
       },
     });
+
+    return {
+      eventId: response.data.id ?? undefined,
+      htmlLink: response.data.htmlLink ?? undefined,
+    };
   }
 }
