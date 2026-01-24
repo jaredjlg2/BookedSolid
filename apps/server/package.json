@@ -1,11 +1,15 @@
 {
   "name": "server",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "directories": {
     "test": "tests"
   },
   "dependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.3",
+    "@types/ws": "^8.18.1",
     "accepts": "^2.0.0",
     "acorn": "^8.15.0",
     "acorn-walk": "^8.3.4",
@@ -169,9 +173,6 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.0.3",
-    "@types/ws": "^8.18.1",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"
   }
