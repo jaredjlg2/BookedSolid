@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { buildStreamUrl } from "../services/coachTwilio";
-import { setUserInactiveById, updateCallLogBySid } from "../services/coachDb";
+import { buildStreamUrl } from "../services/coachTwilio.js";
+import { setUserInactiveById, updateCallLogBySid } from "../services/coachDb.js";
 
 export const twilioRouter = Router();
 

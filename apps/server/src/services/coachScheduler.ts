@@ -1,14 +1,10 @@
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
-import { env } from "../config/env";
-import {
-  CoachUser,
-  createCallLog,
-  listActiveUsers,
-  updateLastCalled,
-} from "./coachDb";
-import { placeCoachCall } from "./coachTwilio";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+import { env } from "../config/env.js";
+import type { CoachUser } from "./coachDb.js";
+import { createCallLog, listActiveUsers, updateLastCalled } from "./coachDb.js";
+import { placeCoachCall } from "./coachTwilio.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);

@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
-import type { BusyInterval } from "../calendar/CalendarAdapter";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+import type { BusyInterval } from "../calendar/CalendarAdapter.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);

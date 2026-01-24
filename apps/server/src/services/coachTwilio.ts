@@ -1,6 +1,6 @@
 import twilio from "twilio";
-import { env } from "../config/env";
-import type { CoachUser } from "./coachDb";
+import { env } from "../config/env.js";
+import type { CoachUser } from "./coachDb.js";
 
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {

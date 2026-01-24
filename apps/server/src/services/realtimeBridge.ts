@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { receptionistPrompt } from "../prompts/receptionist";
+import { receptionistPrompt } from "../prompts/receptionist.js";
 
 interface RealtimeOptions {
   instructions?: string;

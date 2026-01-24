@@ -2,7 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { createRequire } from "module";
-import { env } from "../config/env";
+import { env } from "../config/env.js";
 
 export type LevelEstimate = "A0" | "A1" | "A2" | "B1";
 
