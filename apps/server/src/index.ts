@@ -108,6 +108,19 @@ function extractTranscript(message: any): string | null {
   return null;
 }
 
+function isBookingCreateAppointmentInput(
+  value: Record<string, unknown>
+): value is BookingCreateAppointmentInput {
+  return (
+    typeof value.startISO === "string" &&
+    typeof value.endISO === "string" &&
+    typeof value.name === "string" &&
+    typeof value.reason === "string" &&
+    (value.phone === undefined || typeof value.phone === "string") &&
+    (value.timezone === undefined || typeof value.timezone === "string")
+  );
+}
+
 wss.on("connection", (twilioWs) => {
   console.log("Twilio Media Stream connected");
 
@@ -230,7 +243,17 @@ wss.on("connection", (twilioWs) => {
         return;
       }
       if (toolCall.name === "booking_create_appointment") {
-        const result = await createAppointment(parsedArgs as BookingCreateAppointmentInput);
+        if (!isBookingCreateAppointmentInput(parsedArgs)) {
+          sendToolOutput(toolCall.callId, {
+            error: {
+              code: "invalid_arguments",
+              message:
+                "Missing required appointment fields: startISO, endISO, name, reason.",
+            },
+          });
+          return;
+        }
+        const result = await createAppointment(parsedArgs);
         sendToolOutput(toolCall.callId, result);
         return;
       }
