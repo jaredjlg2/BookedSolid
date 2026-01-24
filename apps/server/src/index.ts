@@ -221,8 +221,8 @@ wss.on("connection", (twilioWs) => {
       JSON.stringify({
         type: "conversation.item.create",
         item: {
-          type: "tool_output",
-          tool_call_id: toolCallId,
+          type: "function_call_output",
+          call_id: toolCallId,
           output: JSON.stringify(output),
         },
       })
