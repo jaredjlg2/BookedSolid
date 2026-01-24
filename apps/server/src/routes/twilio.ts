@@ -1,6 +1,7 @@
 import type { Request } from "express";
 import { Router } from "express";
 import { buildStreamUrl } from "../services/coachTwilio.js";
+import { env } from "../config/env.js";
 import { setUserInactiveById, updateCallLogBySid } from "../services/coachDb.js";
 
 export const twilioRouter = Router();
@@ -49,7 +50,27 @@ function buildVoiceResponse({
 </Response>`;
 }
 
+function buildUnavailableResponse(message: string) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">${message}</Say>
+  <Hangup />
+</Response>`;
+}
+
 twilioRouter.post("/twilio/voice", (req, res) => {
+  if (!env.OPENAI_API_KEY) {
+    res
+      .type("text/xml")
+      .status(503)
+      .send(
+        buildUnavailableResponse(
+          "This service is not configured yet. Please try again later."
+        )
+      );
+    return;
+  }
+
   const streamUrl = resolveStreamUrl(req, "/twilio/stream");
 
   const twiml = buildVoiceResponse({
@@ -63,6 +84,18 @@ twilioRouter.post("/twilio/voice", (req, res) => {
 });
 
 twilioRouter.post("/twilio/coach/voice", (req, res) => {
+  if (!env.OPENAI_API_KEY) {
+    res
+      .type("text/xml")
+      .status(503)
+      .send(
+        buildUnavailableResponse(
+          "This service is not configured yet. Please try again later."
+        )
+      );
+    return;
+  }
+
   const streamUrl = resolveStreamUrl(req, "/twilio/stream/coach");
   const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
 
