@@ -1,20 +1,20 @@
 // apps/server/src/index.ts
-import "./config/env";
+import "./config/env.js";
 import http from "http";
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
-import { healthRouter } from "./routes/health";
-import { twilioRouter } from "./routes/twilio";
-import { coachRouter } from "./routes/coach";
-import { connectOpenAIRealtime } from "./services/realtimeBridge";
-import { receptionistPrompt } from "./prompts/receptionist";
-import { spanishCoachPrompt } from "./prompts/spanishCoach";
-import { startCoachScheduler } from "./services/coachScheduler";
-import { env } from "./config/env";
-import { getCalendarAdapter } from "./services/calendar";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+import { healthRouter } from "./routes/health.js";
+import { twilioRouter } from "./routes/twilio.js";
+import { coachRouter } from "./routes/coach.js";
+import { connectOpenAIRealtime } from "./services/realtimeBridge.js";
+import { receptionistPrompt } from "./prompts/receptionist.js";
+import { spanishCoachPrompt } from "./prompts/spanishCoach.js";
+import { startCoachScheduler } from "./services/coachScheduler.js";
+import { env } from "./config/env.js";
+import { getCalendarAdapter } from "./services/calendar/index.js";
 import {
   detectBookingIntent,
   parseDatePreference,
@@ -24,15 +24,15 @@ import {
   parseTimePreference,
   type DatePreference,
   type ParsedTimePreference,
-} from "./services/booking/bookingParser";
-import { findAvailableSlots, type TimePreference } from "./services/booking/slotFinder";
-import { sendSms } from "./services/twilioSms";
+} from "./services/booking/bookingParser.js";
+import { findAvailableSlots, type TimePreference } from "./services/booking/slotFinder.js";
+import { sendSms } from "./services/twilioSms.js";
 import {
   setUserInactiveById,
   updateCallLogBySid,
   updateUserLevel,
   getUserById,
-} from "./services/coachDb";
+} from "./services/coachDb.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);

@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
-import customParseFormat from "dayjs/plugin/customParseFormat";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
+import customParseFormat from "dayjs/plugin/customParseFormat.js";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -79,7 +79,10 @@ export function parseDatePreference(text: string, timeZone: string): DatePrefere
   );
   if (monthMatch) {
     const value = `${monthMatch[1]} ${monthMatch[2]} ${dayjs().year()}`;
-    const parsed = dayjs.tz(value, ["MMM D YYYY", "MMMM D YYYY"], timeZone);
+    let parsed = dayjs.tz(value, "MMM D YYYY", timeZone);
+    if (!parsed.isValid()) {
+      parsed = dayjs.tz(value, "MMMM D YYYY", timeZone);
+    }
     if (parsed.isValid()) {
       return { type: "date", dateISO: parsed.toISOString() };
     }

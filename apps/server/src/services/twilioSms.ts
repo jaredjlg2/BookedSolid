@@ -1,5 +1,5 @@
 import twilio from "twilio";
-import { env } from "../config/env";
+import { env } from "../config/env.js";
 
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {

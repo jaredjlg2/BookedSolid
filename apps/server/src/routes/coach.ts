@@ -1,7 +1,7 @@
 import { Router } from "express";
 import * as crypto from "node:crypto";
 import { z } from "zod";
-import { env } from "../config/env";
+import { env } from "../config/env.js";
 import {
   listUsers,
   setUserInactive,
@@ -11,10 +11,10 @@ import {
   getUserByPhone,
   setUserPassword,
   updateUserPreferences,
-} from "../services/coachDb";
-import { runCoachCallsNow } from "../services/coachScheduler";
-import { placeCoachCall } from "../services/coachTwilio";
-import { buildCallInstructions } from "../services/instructionBuilder";
+} from "../services/coachDb.js";
+import { runCoachCallsNow } from "../services/coachScheduler.js";
+import { placeCoachCall } from "../services/coachTwilio.js";
+import { buildCallInstructions } from "../services/instructionBuilder.js";
 
 export const coachRouter = Router();
 

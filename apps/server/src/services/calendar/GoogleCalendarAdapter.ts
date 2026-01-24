@@ -1,6 +1,6 @@
 import { google } from "googleapis";
-import { env } from "../../config/env";
-import type { BusyInterval, CalendarAdapter, CalendarEventDetails } from "./CalendarAdapter";
+import { env } from "../../config/env.js";
+import type { BusyInterval, CalendarAdapter, CalendarEventDetails } from "./CalendarAdapter.js";
 
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {

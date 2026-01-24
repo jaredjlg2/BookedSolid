@@ -1,5 +1,5 @@
 import axios from "axios";
-import { env } from "../config/env";
+import { env } from "../config/env.js";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 
