@@ -1,8 +1,21 @@
+import type { Request } from "express";
 import { Router } from "express";
 import { buildStreamUrl } from "../services/coachTwilio.js";
 import { setUserInactiveById, updateCallLogBySid } from "../services/coachDb.js";
 
 export const twilioRouter = Router();
+
+function resolveStreamUrl(req: Request, pathname: string): string {
+  try {
+    return buildStreamUrl(pathname);
+  } catch {
+    const host = req.get("host");
+    const forwardedProto = req.get("x-forwarded-proto");
+    const protocol = forwardedProto?.split(",")[0]?.trim() || req.protocol;
+    const wsProtocol = protocol === "https" ? "wss" : "ws";
+    return `${wsProtocol}://${host}${pathname}`;
+  }
+}
 
 function buildVoiceResponse({
   streamUrl,
@@ -37,7 +50,7 @@ function buildVoiceResponse({
 }
 
 twilioRouter.post("/twilio/voice", (req, res) => {
-  const streamUrl = buildStreamUrl("/twilio/stream");
+  const streamUrl = resolveStreamUrl(req, "/twilio/stream");
 
   const twiml = buildVoiceResponse({
     streamUrl,
@@ -50,7 +63,7 @@ twilioRouter.post("/twilio/voice", (req, res) => {
 });
 
 twilioRouter.post("/twilio/coach/voice", (req, res) => {
-  const streamUrl = buildStreamUrl("/twilio/stream/coach");
+  const streamUrl = resolveStreamUrl(req, "/twilio/stream/coach");
   const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
 
   const twiml = buildVoiceResponse({
