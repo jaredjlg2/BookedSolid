@@ -109,15 +109,28 @@ function extractTranscript(message: any): string | null {
 }
 
 function isBookingCreateAppointmentInput(
-  value: Record<string, unknown>
+  value: unknown
 ): value is BookingCreateAppointmentInput {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const input = value as {
+    startISO?: unknown;
+    endISO?: unknown;
+    name?: unknown;
+    reason?: unknown;
+    phone?: unknown;
+    timezone?: unknown;
+  };
+
   return (
-    typeof value.startISO === "string" &&
-    typeof value.endISO === "string" &&
-    typeof value.name === "string" &&
-    typeof value.reason === "string" &&
-    (value.phone === undefined || typeof value.phone === "string") &&
-    (value.timezone === undefined || typeof value.timezone === "string")
+    typeof input.startISO === "string" &&
+    typeof input.endISO === "string" &&
+    typeof input.name === "string" &&
+    typeof input.reason === "string" &&
+    (input.phone === undefined || typeof input.phone === "string") &&
+    (input.timezone === undefined || typeof input.timezone === "string")
   );
 }
 
