@@ -30,4 +30,9 @@ const EnvSchema = z.object({
   BOOKING_DRY_RUN: z.coerce.boolean().optional(),
 });
 
-export const env = EnvSchema.parse(process.env);
+const rawEnv = {
+  ...process.env,
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL ?? process.env.RENDER_EXTERNAL_URL,
+};
+
+export const env = EnvSchema.parse(rawEnv);
