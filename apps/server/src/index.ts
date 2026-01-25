@@ -7,6 +7,7 @@ import { healthRouter } from "./routes/health.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { coachRouter } from "./routes/coach.js";
 import { connectOpenAIRealtime } from "./services/realtimeBridge.js";
+import { env } from "./config/env.js";
 import { receptionistPrompt } from "./prompts/receptionist.js";
 import { spanishCoachPrompt } from "./prompts/spanishCoach.js";
 import { startCoachScheduler } from "./services/coachScheduler.js";
@@ -30,6 +31,7 @@ import {
   updateUserLevel,
   getUserById,
 } from "./services/coachDb.js";
+import { sendSms } from "./services/twilioSms.js";
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -103,6 +105,38 @@ function isEnglishAnswer(text: string) {
   const englishWords = ["the", "and", "please", "hello", "i", "you", "my", "is", "not"];
   return englishWords.some((word) => new RegExp(`\\b${word}\\b`, "i").test(text));
 }
+
+function formatDurationMs(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+function formatCallDateTime(iso: string | null) {
+  if (!iso) return "Unknown time";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function normalizeReason(reason: string | null) {
+  const trimmed = reason?.trim();
+  if (!trimmed) return "General inquiry.";
+  return trimmed.endsWith(".") ? trimmed : `${trimmed}.`;
+}
+
+function isDialableNumber(phone: string | null) {
+  if (!phone) return false;
+  const normalized = phone.trim();
+  if (!normalized || normalized.toLowerCase() === "anonymous") return false;
+  return /^\+?[1-9]\d{6,}$/.test(normalized);
+}
+
+const sentPostCallSummaries = new Set<string>();
 
 function extractTranscript(message: any): string | null {
   if (typeof message?.transcript === "string") return message.transcript;
@@ -220,6 +254,137 @@ wss.on("connection", (twilioWs) => {
     repeats: 0,
     spanishAnswers: 0,
     spanishWithoutEnglish: 0,
+  };
+
+  const callSummaryState = {
+    callSid: null as string | null,
+    callerPhone: null as string | null,
+    businessPhone: null as string | null,
+    startTimeMs: null as number | null,
+    endTimeMs: null as number | null,
+    callerName: null as string | null,
+    primaryReason: null as string | null,
+    appointmentStartISO: null as string | null,
+    appointmentBooked: null as boolean | null,
+    appointmentRequested: false,
+    followUpNote: null as string | null,
+  };
+
+  const captureReason = (reason: string | null) => {
+    if (reason) {
+      callSummaryState.primaryReason = reason;
+    }
+  };
+
+  const captureCallerName = (name: string | null) => {
+    if (name && !callSummaryState.callerName) {
+      callSummaryState.callerName = name;
+    }
+  };
+
+  const markFollowUp = (note: string) => {
+    if (!callSummaryState.followUpNote) {
+      callSummaryState.followUpNote = note;
+    }
+  };
+
+  const buildOwnerSummaryBody = () => {
+    const callerName = callSummaryState.callerName?.trim() || "Unknown caller";
+    const callerNumber = callSummaryState.callerPhone ?? "Unknown number";
+    const reason = normalizeReason(callSummaryState.primaryReason);
+    const outcome = callSummaryState.appointmentBooked
+      ? `Outcome: Appointment booked: ${formatCallDateTime(
+          callSummaryState.appointmentStartISO
+        )}`
+      : "Outcome: No appointment booked";
+    const followUp =
+      callSummaryState.followUpNote ||
+      (callSummaryState.appointmentRequested && !callSummaryState.appointmentBooked
+        ? "Confirm next steps with the caller."
+        : null);
+    const duration =
+      callSummaryState.startTimeMs && callSummaryState.endTimeMs
+        ? formatDurationMs(callSummaryState.endTimeMs - callSummaryState.startTimeMs)
+        : "Unknown duration";
+
+    const lines = [
+      "Call summary",
+      `Caller: ${callerName} (${callerNumber})`,
+      `Reason: ${reason}`,
+      outcome,
+      followUp ? `Follow-up: ${followUp}` : null,
+      `Duration: ${duration}`,
+    ].filter(Boolean);
+
+    return lines.join("\n");
+  };
+
+  const buildCallerSummaryBody = () => {
+    const businessName = env.BUSINESS_NAME ?? "our office";
+    const reason = normalizeReason(callSummaryState.primaryReason);
+    const outcome = callSummaryState.appointmentBooked
+      ? `Outcome: Appointment booked: ${formatCallDateTime(
+          callSummaryState.appointmentStartISO
+        )}`
+      : "Outcome: No appointment booked";
+    const followUp =
+      callSummaryState.followUpNote ||
+      (callSummaryState.appointmentRequested && !callSummaryState.appointmentBooked
+        ? "Please contact us if you'd like to schedule."
+        : null);
+    const duration =
+      callSummaryState.startTimeMs && callSummaryState.endTimeMs
+        ? formatDurationMs(callSummaryState.endTimeMs - callSummaryState.startTimeMs)
+        : "Unknown duration";
+
+    const lines = [
+      `Thanks for calling ${businessName}.`,
+      `We noted: ${reason}`,
+      outcome,
+      followUp ? `Next steps: ${followUp}` : null,
+      `Call duration: ${duration}`,
+    ].filter(Boolean);
+
+    return lines.join("\n");
+  };
+
+  const sendPostCallSmsSummaries = async () => {
+    if (!env.ENABLE_POST_CALL_SMS) return;
+    if (mode !== "receptionist") return;
+    if (!callSummaryState.callSid) return;
+    if (sentPostCallSummaries.has(callSummaryState.callSid)) return;
+    sentPostCallSummaries.add(callSummaryState.callSid);
+
+    const ownerPhone = env.BUSINESS_OWNER_PHONE;
+    if (!ownerPhone) {
+      console.log("Post-call SMS skipped: missing BUSINESS_OWNER_PHONE");
+      return;
+    }
+
+    const ownerBody = buildOwnerSummaryBody();
+    const callerBody = buildCallerSummaryBody();
+    const isDev = process.env.NODE_ENV !== "production";
+    if (isDev) {
+      console.log("Post-call SMS body (owner):", ownerBody);
+      console.log("Post-call SMS body (caller):", callerBody);
+    }
+
+    try {
+      const ownerMessage = await sendSms(ownerPhone, ownerBody);
+      console.log("SMS summary sent (owner)", { sid: ownerMessage.sid });
+    } catch (error) {
+      console.log("SMS summary failed (owner)", error);
+    }
+
+    const sendSummaryToCaller = env.SEND_SUMMARY_TO_CALLER ?? false;
+    if (sendSummaryToCaller && isDialableNumber(callSummaryState.callerPhone)) {
+      try {
+        const callerMessage = await sendSms(callSummaryState.callerPhone!, callerBody);
+        console.log("SMS summary sent (caller)", { sid: callerMessage.sid });
+      } catch (error) {
+        console.log("SMS summary failed (caller)", error);
+      }
+    }
   };
 
   const sendGreeting = () => {
@@ -384,6 +549,9 @@ wss.on("connection", (twilioWs) => {
           return;
         }
         const typedArgs = parsedArgs as BookingCreateAppointmentInput;
+        callSummaryState.appointmentRequested = true;
+        captureCallerName(typedArgs.name);
+        captureReason(typedArgs.reason);
         const idempotencySource = buildIdempotencySource();
         const dedupeKey = buildAppointmentDedupeKey(typedArgs.startISO, typedArgs.endISO);
         const existing = recentAppointments.get(dedupeKey);
@@ -408,6 +576,8 @@ wss.on("connection", (twilioWs) => {
           dedupeKey,
           toolCallId: toolCall.callId,
         });
+        callSummaryState.appointmentBooked = result.created;
+        callSummaryState.appointmentStartISO = result.startISO;
         sendToolOutputCached(toolCall.callId, result);
         return;
       }
@@ -421,7 +591,12 @@ wss.on("connection", (twilioWs) => {
           });
           return;
         }
+        callSummaryState.appointmentRequested = true;
+        captureReason("Locate an existing appointment.");
         const result = await findAppointment(parsedArgs as BookingFindAppointmentInput);
+        if (!result.matches.length) {
+          markFollowUp("No matching appointment found.");
+        }
         sendToolOutputCached(toolCall.callId, result);
         return;
       }
@@ -435,7 +610,11 @@ wss.on("connection", (twilioWs) => {
           });
           return;
         }
+        callSummaryState.appointmentRequested = true;
+        captureReason("Reschedule an existing appointment.");
         const result = await updateAppointment(parsedArgs as BookingUpdateAppointmentInput);
+        callSummaryState.appointmentBooked = result.updated;
+        callSummaryState.appointmentStartISO = result.startISO;
         sendToolOutputCached(toolCall.callId, result);
         return;
       }
@@ -449,7 +628,14 @@ wss.on("connection", (twilioWs) => {
           });
           return;
         }
+        callSummaryState.appointmentRequested = true;
+        captureReason("Cancel an existing appointment.");
         const result = await cancelAppointment(parsedArgs as BookingCancelAppointmentInput);
+        if (!result.cancelled) {
+          markFollowUp("Cancellation not confirmed.");
+        } else {
+          callSummaryState.appointmentBooked = false;
+        }
         sendToolOutputCached(toolCall.callId, result);
         return;
       }
@@ -506,6 +692,13 @@ wss.on("connection", (twilioWs) => {
       mode = params.mode === "spanish_coach" ? "spanish_coach" : "receptionist";
       userId = params.userId ? Number(params.userId) : null;
       callerPhone = typeof params.from === "string" ? params.from : null;
+      const businessPhone = typeof params.to === "string" ? params.to : null;
+
+      callSummaryState.callSid = callSid;
+      callSummaryState.callerPhone = callerPhone;
+      callSummaryState.businessPhone = businessPhone;
+      callSummaryState.startTimeMs = Date.now();
+      callSummaryState.endTimeMs = null;
 
       console.log("Stream start", msg.start);
 
@@ -622,6 +815,7 @@ wss.on("connection", (twilioWs) => {
 
     if (msg.event === "stop") {
       console.log("Stream stop", msg.stop);
+      callSummaryState.endTimeMs = Date.now();
 
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
@@ -657,6 +851,10 @@ wss.on("connection", (twilioWs) => {
       try {
         openaiWs?.close();
       } catch {}
+
+      sendPostCallSmsSummaries().catch((error) =>
+        console.log("Post-call SMS summary error", error)
+      );
       return;
     }
   });
