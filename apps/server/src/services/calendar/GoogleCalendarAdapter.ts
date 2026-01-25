@@ -17,6 +17,7 @@ const inflightPromises = new Map<
   string,
   Promise<{ eventId?: string; htmlLink?: string } | null>
 >();
+const RATE_LIMIT_RETRY_DELAYS_MS = [500, 1500, 3000];
 
 function pruneIdempotencyCache(now = Date.now()) {
   for (const [key, entry] of idempotencyCache.entries()) {
@@ -32,6 +33,40 @@ function requireEnv(value: string | undefined, name: string): string {
     throw new Error(`${name} is missing`);
   }
   return value;
+}
+
+function isRateLimitError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const response = (error as { response?: { status?: number; data?: any } }).response;
+  const status = response?.status;
+  if (status !== 403 && status !== 429) return false;
+  const reasons: string[] =
+    response?.data?.error?.errors?.map((item: { reason?: string }) => item.reason) ?? [];
+  return (
+    status === 429 ||
+    reasons.some((reason) =>
+      ["rateLimitExceeded", "userRateLimitExceeded"].includes(reason ?? "")
+    )
+  );
+}
+
+async function withCalendarRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt <= RATE_LIMIT_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        console.log("📅 retrying calendar operation", { operation, attempt });
+      }
+      return await fn();
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt === RATE_LIMIT_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      const delayMs = RATE_LIMIT_RETRY_DELAYS_MS[attempt] ?? 0;
+      console.log("📅 rate limit hit; backing off", { operation, delayMs });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(`Calendar operation failed after retries: ${operation}`);
 }
 
 function buildOAuthClient() {
@@ -127,8 +162,8 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
 
     console.log("📅 INSERT start", { idempotencyKey, toolCallId });
 
-    const insertPromise = calendar.events
-      .insert({
+    const insertPromise = withCalendarRetry("insert", () =>
+      calendar.events.insert({
         calendarId: this.calendarId,
         requestBody: {
           summary: details.title,
@@ -138,6 +173,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
           end: { dateTime: endISO, timeZone: details.timezone },
         },
       })
+    )
       .then((response) => {
         idempotencyCache.set(idempotencyKey, {
           status: "done",
@@ -209,16 +245,18 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
     const calendar = google.calendar({ version: "v3", auth });
 
     try {
-      const response = await calendar.events.patch({
-        calendarId: this.calendarId,
-        eventId,
-        requestBody: {
-          summary: updates.summary,
-          description: updates.description,
-          start: { dateTime: updates.start.toISOString(), timeZone: updates.timezone },
-          end: { dateTime: updates.end.toISOString(), timeZone: updates.timezone },
-        },
-      });
+      const response = await withCalendarRetry("update", () =>
+        calendar.events.patch({
+          calendarId: this.calendarId,
+          eventId,
+          requestBody: {
+            summary: updates.summary,
+            description: updates.description,
+            start: { dateTime: updates.start.toISOString(), timeZone: updates.timezone },
+            end: { dateTime: updates.end.toISOString(), timeZone: updates.timezone },
+          },
+        })
+      );
 
       console.log("📅 UPDATE success", {
         eventId,
@@ -246,10 +284,12 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
     const calendar = google.calendar({ version: "v3", auth });
 
     try {
-      const response = await calendar.events.delete({
-        calendarId: this.calendarId,
-        eventId,
-      });
+      const response = await withCalendarRetry("delete", () =>
+        calendar.events.delete({
+          calendarId: this.calendarId,
+          eventId,
+        })
+      );
 
       console.log("📅 DELETE success", {
         eventId,

@@ -30,7 +30,7 @@ const EnvSchema = z.object({
   APPT_BUFFER_MINUTES: z.coerce.number().optional(),
   BOOKING_DRY_RUN: z.coerce.boolean().optional(),
 
-  ENABLE_POST_CALL_SMS: z.coerce.boolean().optional(),
+  ENABLE_POST_CALL_SMS: z.coerce.boolean().default(true),
   SEND_SUMMARY_TO_CALLER: z.coerce.boolean().optional(),
 });
 
