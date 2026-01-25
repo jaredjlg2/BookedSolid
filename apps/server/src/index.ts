@@ -16,6 +16,7 @@ import {
   createAppointment,
   type BookingCheckAvailabilityInput,
   type BookingCreateAppointmentInput,
+  type BookingCreateAppointmentOutput,
 } from "./services/booking/bookingTools.js";
 import {
   setUserInactiveById,
@@ -146,6 +147,12 @@ wss.on("connection", (twilioWs) => {
   let openaiWs: WebSocket | null = null;
   let assistantBuffer = "";
   let optedOut = false;
+  const processedToolCalls = new Map<string, unknown>();
+  const recentAppointments = new Map<
+    string,
+    { timestamp: number; result: BookingCreateAppointmentOutput }
+  >();
+  const appointmentDedupeWindowMs = 2 * 60 * 1000;
 
   const metrics = {
     simplifications: 0,
@@ -229,17 +236,59 @@ wss.on("connection", (twilioWs) => {
     );
   };
 
+  const sendToolOutputCached = (toolCallId: string, output: unknown) => {
+    processedToolCalls.set(toolCallId, output);
+    sendToolOutput(toolCallId, output);
+  };
+
+  const sendCalendarFiller = (toolName: string, toolCallId: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    const fillerSentence = "One moment while I check the calendar.";
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions: `Say exactly this one short sentence to the caller: "${fillerSentence}"`,
+        },
+      })
+    );
+    console.log("🗣️ calendar filler emitted before tool call", { toolName, toolCallId });
+  };
+
+  const buildAppointmentDedupeKey = (startISO: string, endISO: string) => {
+    const sessionId = callSid ?? streamSid ?? "unknown-session";
+    return `${sessionId}:${startISO}:${endISO}`;
+  };
+
   const handleToolCall = async (toolCall: {
     name: string;
     callId: string;
     arguments: unknown;
   }) => {
+    const cachedOutput = processedToolCalls.get(toolCall.callId);
+    if (cachedOutput) {
+      console.log("🔁 tool_call_id dedupe hit", {
+        toolCallId: toolCall.callId,
+        toolName: toolCall.name,
+      });
+      sendToolOutput(toolCall.callId, cachedOutput);
+      return;
+    }
+
+    if (
+      toolCall.name === "booking_check_availability" ||
+      toolCall.name === "booking_create_appointment"
+    ) {
+      sendCalendarFiller(toolCall.name, toolCall.callId);
+    }
+
     let parsedArgs: Record<string, unknown> = {};
     if (typeof toolCall.arguments === "string" && toolCall.arguments.trim().length > 0) {
       try {
         parsedArgs = JSON.parse(toolCall.arguments);
       } catch (error) {
-        sendToolOutput(toolCall.callId, {
+        sendToolOutputCached(toolCall.callId, {
           error: { code: "invalid_arguments", message: "Could not parse tool arguments." },
         });
         console.log("Tool arguments parse error:", error);
@@ -252,12 +301,12 @@ wss.on("connection", (twilioWs) => {
     try {
       if (toolCall.name === "booking_check_availability") {
         const result = await checkAvailability(parsedArgs as BookingCheckAvailabilityInput);
-        sendToolOutput(toolCall.callId, result);
+        sendToolOutputCached(toolCall.callId, result);
         return;
       }
       if (toolCall.name === "booking_create_appointment") {
         if (!isBookingCreateAppointmentInput(parsedArgs)) {
-          sendToolOutput(toolCall.callId, {
+          sendToolOutputCached(toolCall.callId, {
             error: {
               code: "invalid_arguments",
               message:
@@ -266,22 +315,41 @@ wss.on("connection", (twilioWs) => {
           });
           return;
         }
-        const result = await createAppointment(parsedArgs);
-        sendToolOutput(toolCall.callId, result);
+        const typedArgs = parsedArgs as BookingCreateAppointmentInput;
+        const dedupeKey = buildAppointmentDedupeKey(typedArgs.startISO, typedArgs.endISO);
+        const existing = recentAppointments.get(dedupeKey);
+        const now = Date.now();
+        if (existing && now - existing.timestamp < appointmentDedupeWindowMs) {
+          console.log("📅 appointment dedupe hit; skipping calendar insert", {
+            dedupeKey,
+            toolCallId: toolCall.callId,
+          });
+          sendToolOutputCached(toolCall.callId, existing.result);
+          return;
+        }
+
+        recentAppointments.delete(dedupeKey);
+        const result = await createAppointment(typedArgs);
+        recentAppointments.set(dedupeKey, { timestamp: now, result });
+        console.log("📅 appointment recorded for dedupe window", {
+          dedupeKey,
+          toolCallId: toolCall.callId,
+        });
+        sendToolOutputCached(toolCall.callId, result);
         return;
       }
 
-      sendToolOutput(toolCall.callId, {
+      sendToolOutputCached(toolCall.callId, {
         error: { code: "unknown_tool", message: `Unknown tool: ${toolCall.name}` },
       });
     } catch (error) {
       if (error instanceof BookingToolError) {
-        sendToolOutput(toolCall.callId, {
+        sendToolOutputCached(toolCall.callId, {
           error: { code: error.code, message: error.message },
         });
         return;
       }
-      sendToolOutput(toolCall.callId, {
+      sendToolOutputCached(toolCall.callId, {
         error: { code: "booking_error", message: "Booking tool failed." },
       });
       console.log("Tool execution error:", error);
