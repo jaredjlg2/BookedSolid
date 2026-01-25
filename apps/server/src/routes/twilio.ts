@@ -24,17 +24,20 @@ function buildVoiceResponse({
   userId,
   greeting,
   fromNumber,
+  toNumber,
 }: {
   streamUrl: string;
   mode: string;
   userId?: string;
   greeting: string;
   fromNumber?: string;
+  toNumber?: string;
 }) {
   const params = [
     `<Parameter name="mode" value="${mode}" />`,
     userId ? `<Parameter name="userId" value="${userId}" />` : "",
     fromNumber ? `<Parameter name="from" value="${fromNumber}" />` : "",
+    toNumber ? `<Parameter name="to" value="${toNumber}" />` : "",
   ]
     .filter(Boolean)
     .join("\n    ");
@@ -78,6 +81,7 @@ twilioRouter.post("/twilio/voice", (req, res) => {
     mode: "receptionist",
     greeting: "Connecting you now.",
     fromNumber: req.body?.From as string | undefined,
+    toNumber: req.body?.To as string | undefined,
   });
 
   res.type("text/xml").send(twiml);
@@ -104,6 +108,7 @@ twilioRouter.post("/twilio/coach/voice", (req, res) => {
     mode: "spanish_coach",
     userId,
     greeting: "Conectando con tu coach de español.",
+    toNumber: req.body?.To as string | undefined,
   });
 
   res.type("text/xml").send(twiml);

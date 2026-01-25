@@ -24,10 +24,14 @@ const EnvSchema = z.object({
   GOOGLE_REFRESH_TOKEN: z.string().optional(),
   GOOGLE_CALENDAR_ID: z.string().optional(),
   BUSINESS_NAME: z.string().optional(),
+  BUSINESS_OWNER_PHONE: z.string().optional(),
   DEFAULT_TIMEZONE: z.string().optional(),
   APPT_DURATION_MINUTES: z.coerce.number().optional(),
   APPT_BUFFER_MINUTES: z.coerce.number().optional(),
   BOOKING_DRY_RUN: z.coerce.boolean().optional(),
+
+  ENABLE_POST_CALL_SMS: z.coerce.boolean().optional(),
+  SEND_SUMMARY_TO_CALLER: z.coerce.boolean().optional(),
 });
 
 const rawEnv = {
