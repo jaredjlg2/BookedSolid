@@ -152,6 +152,7 @@ export async function checkAvailability(
 export async function createAppointment(
   input: BookingCreateAppointmentInput
 ): Promise<BookingCreateAppointmentOutput> {
+  const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
   const timezoneName = resolveTimezone(input.timezone);
   const start = new Date(input.startISO);
   const end = new Date(input.endISO);
@@ -164,12 +165,12 @@ export async function createAppointment(
     `Summary: ${summary}`,
   ].join("\n");
 
-  console.log(`📅 create event (dryRun=${env.BOOKING_DRY_RUN ?? false})`, {
+  console.log(`📅 create event (dryRun=${dryRun})`, {
     startISO: start.toISOString(),
     endISO: end.toISOString(),
   });
 
-  if (env.BOOKING_DRY_RUN) {
+  if (dryRun) {
     return {
       dryRun: true,
       created: false,
