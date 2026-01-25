@@ -12,11 +12,17 @@ import { spanishCoachPrompt } from "./prompts/spanishCoach.js";
 import { startCoachScheduler } from "./services/coachScheduler.js";
 import {
   BookingToolError,
+  cancelAppointment,
   checkAvailability,
   createAppointment,
+  findAppointment,
   type BookingCheckAvailabilityInput,
+  type BookingCancelAppointmentInput,
   type BookingCreateAppointmentInput,
   type BookingCreateAppointmentOutput,
+  type BookingFindAppointmentInput,
+  type BookingUpdateAppointmentInput,
+  updateAppointment,
 } from "./services/booking/bookingTools.js";
 import {
   setUserInactiveById,
@@ -135,11 +141,66 @@ function isBookingCreateAppointmentInput(
   );
 }
 
+function isBookingFindAppointmentInput(
+  value: unknown
+): value is BookingFindAppointmentInput {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const input = value as {
+    startISO?: unknown;
+    timezone?: unknown;
+    name?: unknown;
+    daysAhead?: unknown;
+  };
+  return (
+    (input.startISO === undefined || typeof input.startISO === "string") &&
+    (input.timezone === undefined || typeof input.timezone === "string") &&
+    (input.name === undefined || typeof input.name === "string") &&
+    (input.daysAhead === undefined || typeof input.daysAhead === "number")
+  );
+}
+
+function isBookingUpdateAppointmentInput(
+  value: unknown
+): value is BookingUpdateAppointmentInput {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const input = value as {
+    eventId?: unknown;
+    startISO?: unknown;
+    endISO?: unknown;
+    summary?: unknown;
+    description?: unknown;
+    timezone?: unknown;
+  };
+  return (
+    typeof input.eventId === "string" &&
+    typeof input.startISO === "string" &&
+    typeof input.endISO === "string" &&
+    (input.summary === undefined || typeof input.summary === "string") &&
+    (input.description === undefined || typeof input.description === "string") &&
+    (input.timezone === undefined || typeof input.timezone === "string")
+  );
+}
+
+function isBookingCancelAppointmentInput(
+  value: unknown
+): value is BookingCancelAppointmentInput {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const input = value as { eventId?: unknown };
+  return typeof input.eventId === "string";
+}
+
 wss.on("connection", (twilioWs) => {
   console.log("Twilio Media Stream connected");
 
   let streamSid: string | null = null;
   let callSid: string | null = null;
+  let conversationId: string | null = null;
   let userId: number | null = null;
   let callerPhone: string | null = null;
   let mode: "receptionist" | "spanish_coach" = "receptionist";
@@ -261,6 +322,10 @@ wss.on("connection", (twilioWs) => {
     return `${sessionId}:${startISO}:${endISO}`;
   };
 
+  const buildIdempotencySource = () => {
+    return callSid ?? streamSid ?? conversationId ?? "unknown-session";
+  };
+
   const handleToolCall = async (toolCall: {
     name: string;
     callId: string;
@@ -278,7 +343,10 @@ wss.on("connection", (twilioWs) => {
 
     if (
       toolCall.name === "booking_check_availability" ||
-      toolCall.name === "booking_create_appointment"
+      toolCall.name === "booking_create_appointment" ||
+      toolCall.name === "find_event" ||
+      toolCall.name === "update_event" ||
+      toolCall.name === "cancel_event"
     ) {
       sendCalendarFiller(toolCall.name, toolCall.callId);
     }
@@ -316,6 +384,7 @@ wss.on("connection", (twilioWs) => {
           return;
         }
         const typedArgs = parsedArgs as BookingCreateAppointmentInput;
+        const idempotencySource = buildIdempotencySource();
         const dedupeKey = buildAppointmentDedupeKey(typedArgs.startISO, typedArgs.endISO);
         const existing = recentAppointments.get(dedupeKey);
         const now = Date.now();
@@ -329,12 +398,58 @@ wss.on("connection", (twilioWs) => {
         }
 
         recentAppointments.delete(dedupeKey);
-        const result = await createAppointment(typedArgs);
+        const result = await createAppointment({
+          ...typedArgs,
+          idempotencySource,
+          toolCallId: toolCall.callId,
+        });
         recentAppointments.set(dedupeKey, { timestamp: now, result });
         console.log("📅 appointment recorded for dedupe window", {
           dedupeKey,
           toolCallId: toolCall.callId,
         });
+        sendToolOutputCached(toolCall.callId, result);
+        return;
+      }
+      if (toolCall.name === "find_event") {
+        if (!isBookingFindAppointmentInput(parsedArgs)) {
+          sendToolOutputCached(toolCall.callId, {
+            error: {
+              code: "invalid_arguments",
+              message: "Invalid appointment lookup request.",
+            },
+          });
+          return;
+        }
+        const result = await findAppointment(parsedArgs as BookingFindAppointmentInput);
+        sendToolOutputCached(toolCall.callId, result);
+        return;
+      }
+      if (toolCall.name === "update_event") {
+        if (!isBookingUpdateAppointmentInput(parsedArgs)) {
+          sendToolOutputCached(toolCall.callId, {
+            error: {
+              code: "invalid_arguments",
+              message: "Missing required update fields: eventId, startISO, endISO.",
+            },
+          });
+          return;
+        }
+        const result = await updateAppointment(parsedArgs as BookingUpdateAppointmentInput);
+        sendToolOutputCached(toolCall.callId, result);
+        return;
+      }
+      if (toolCall.name === "cancel_event") {
+        if (!isBookingCancelAppointmentInput(parsedArgs)) {
+          sendToolOutputCached(toolCall.callId, {
+            error: {
+              code: "invalid_arguments",
+              message: "Missing required cancel fields: eventId.",
+            },
+          });
+          return;
+        }
+        const result = await cancelAppointment(parsedArgs as BookingCancelAppointmentInput);
         sendToolOutputCached(toolCall.callId, result);
         return;
       }
@@ -424,6 +539,15 @@ wss.on("connection", (twilioWs) => {
           ) {
             console.log("OpenAI event:", openaiMsg.type);
             if (openaiMsg.type === "error") console.log("OpenAI error:", openaiMsg.error);
+          }
+
+          if (!conversationId) {
+            conversationId =
+              (typeof openaiMsg.conversation_id === "string"
+                ? openaiMsg.conversation_id
+                : typeof openaiMsg.conversationId === "string"
+                  ? openaiMsg.conversationId
+                  : null) ?? conversationId;
           }
 
           const toolCall = extractToolCall(openaiMsg);

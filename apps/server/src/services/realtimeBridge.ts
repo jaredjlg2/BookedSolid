@@ -92,6 +92,62 @@ export function connectOpenAIRealtime(options: RealtimeOptions = {}): WebSocket 
                 required: ["startISO", "endISO", "name", "reason"],
               },
             },
+            {
+              type: "function",
+              name: "find_event",
+              description: "Find a calendar event matching a requested appointment time.",
+              parameters: {
+                type: "object",
+                properties: {
+                  startISO: {
+                    type: "string",
+                    description: "Target appointment start time in ISO format.",
+                  },
+                  timezone: {
+                    type: "string",
+                    description: "IANA timezone name (e.g., America/Phoenix).",
+                  },
+                  name: {
+                    type: "string",
+                    description: "Optional caller name to match against event summary.",
+                  },
+                  daysAhead: {
+                    type: "number",
+                    description: "Optional number of days ahead to search (default 30).",
+                  },
+                },
+                required: [],
+              },
+            },
+            {
+              type: "function",
+              name: "update_event",
+              description: "Update an existing calendar event time/details.",
+              parameters: {
+                type: "object",
+                properties: {
+                  eventId: { type: "string" },
+                  startISO: { type: "string" },
+                  endISO: { type: "string" },
+                  summary: { type: "string" },
+                  description: { type: "string" },
+                  timezone: { type: "string" },
+                },
+                required: ["eventId", "startISO", "endISO"],
+              },
+            },
+            {
+              type: "function",
+              name: "cancel_event",
+              description: "Cancel an existing calendar event.",
+              parameters: {
+                type: "object",
+                properties: {
+                  eventId: { type: "string" },
+                },
+                required: ["eventId"],
+              },
+            },
           ],
         },
       })

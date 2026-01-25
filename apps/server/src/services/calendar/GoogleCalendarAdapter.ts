@@ -1,6 +1,31 @@
 import { google } from "googleapis";
 import { env } from "../../config/env.js";
-import type { BusyInterval, CalendarAdapter, CalendarEventDetails } from "./CalendarAdapter.js";
+import type {
+  BusyInterval,
+  CalendarAdapter,
+  CalendarEventDetails,
+  CalendarEventRecord,
+  CalendarEventUpdate,
+} from "./CalendarAdapter.js";
+
+const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
+const idempotencyCache = new Map<
+  string,
+  { status: "inflight" | "done"; eventId?: string; htmlLink?: string; createdAt: number }
+>();
+const inflightPromises = new Map<
+  string,
+  Promise<{ eventId?: string; htmlLink?: string } | null>
+>();
+
+function pruneIdempotencyCache(now = Date.now()) {
+  for (const [key, entry] of idempotencyCache.entries()) {
+    if (now - entry.createdAt > IDEMPOTENCY_TTL_MS) {
+      idempotencyCache.delete(key);
+      inflightPromises.delete(key);
+    }
+  }
+}
 
 function requireEnv(value: string | undefined, name: string): string {
   if (!value) {
@@ -65,23 +90,182 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       return null;
     }
 
+    const startISO = start.toISOString();
+    const endISO = end.toISOString();
+    const idempotencySource = details.idempotencySource ?? "unknown-session";
+    const idempotencyKey = `${idempotencySource}:${this.calendarId}:${startISO}:${endISO}`;
+    const toolCallId = details.toolCallId;
+
+    pruneIdempotencyCache();
+    const cached = idempotencyCache.get(idempotencyKey);
+    if (cached) {
+      console.log("📅 INSERT skipped (duplicate)", {
+        idempotencyKey,
+        toolCallId,
+        status: cached.status,
+        eventId: cached.eventId,
+      });
+      if (cached.status === "inflight") {
+        const inflight = inflightPromises.get(idempotencyKey);
+        if (inflight) {
+          return await inflight;
+        }
+      }
+      return {
+        eventId: cached.eventId,
+        htmlLink: cached.htmlLink,
+      };
+    }
+
+    idempotencyCache.set(idempotencyKey, {
+      status: "inflight",
+      createdAt: Date.now(),
+    });
+
     const auth = buildOAuthClient();
     const calendar = google.calendar({ version: "v3", auth });
 
-    const response = await calendar.events.insert({
+    console.log("📅 INSERT start", { idempotencyKey, toolCallId });
+
+    const insertPromise = calendar.events
+      .insert({
+        calendarId: this.calendarId,
+        requestBody: {
+          summary: details.title,
+          description: details.description,
+          location: details.location,
+          start: { dateTime: startISO, timeZone: details.timezone },
+          end: { dateTime: endISO, timeZone: details.timezone },
+        },
+      })
+      .then((response) => {
+        idempotencyCache.set(idempotencyKey, {
+          status: "done",
+          eventId: response.data.id ?? undefined,
+          htmlLink: response.data.htmlLink ?? undefined,
+          createdAt: Date.now(),
+        });
+        return {
+          eventId: response.data.id ?? undefined,
+          htmlLink: response.data.htmlLink ?? undefined,
+        };
+      })
+      .catch((error) => {
+        idempotencyCache.delete(idempotencyKey);
+        const response = (error as { response?: { status?: number; data?: unknown } })
+          .response;
+        console.log("📅 INSERT failed", {
+          idempotencyKey,
+          toolCallId,
+          status: response?.status,
+          response: response?.data,
+        });
+        throw error;
+      })
+      .finally(() => {
+        inflightPromises.delete(idempotencyKey);
+      });
+
+    inflightPromises.set(idempotencyKey, insertPromise);
+    return await insertPromise;
+  }
+
+  async listEvents(windowStart: Date, windowEnd: Date): Promise<CalendarEventRecord[]> {
+    const auth = buildOAuthClient();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    const response = await calendar.events.list({
       calendarId: this.calendarId,
-      requestBody: {
-        summary: details.title,
-        description: details.description,
-        location: details.location,
-        start: { dateTime: start.toISOString(), timeZone: details.timezone },
-        end: { dateTime: end.toISOString(), timeZone: details.timezone },
-      },
+      timeMin: windowStart.toISOString(),
+      timeMax: windowEnd.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 50,
     });
 
-    return {
-      eventId: response.data.id ?? undefined,
-      htmlLink: response.data.htmlLink ?? undefined,
-    };
+    const items = response.data.items ?? [];
+    return items
+      .filter((item) => Boolean(item.id && item.start && item.end))
+      .map((item) => {
+        const startISO = item.start?.dateTime ?? item.start?.date ?? "";
+        const endISO = item.end?.dateTime ?? item.end?.date ?? "";
+        return {
+          id: item.id ?? "",
+          summary: item.summary ?? undefined,
+          description: item.description ?? undefined,
+          startISO,
+          endISO,
+          timezone: item.start?.timeZone ?? item.end?.timeZone ?? undefined,
+        };
+      })
+      .filter((item) => item.id && item.startISO && item.endISO);
+  }
+
+  async updateEvent(
+    eventId: string,
+    updates: CalendarEventUpdate
+  ): Promise<{ eventId?: string; htmlLink?: string } | null> {
+    const auth = buildOAuthClient();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    try {
+      const response = await calendar.events.patch({
+        calendarId: this.calendarId,
+        eventId,
+        requestBody: {
+          summary: updates.summary,
+          description: updates.description,
+          start: { dateTime: updates.start.toISOString(), timeZone: updates.timezone },
+          end: { dateTime: updates.end.toISOString(), timeZone: updates.timezone },
+        },
+      });
+
+      console.log("📅 UPDATE success", {
+        eventId,
+        status: response.status,
+        response: response.data,
+      });
+
+      return {
+        eventId: response.data.id ?? eventId,
+        htmlLink: response.data.htmlLink ?? undefined,
+      };
+    } catch (error) {
+      const response = (error as { response?: { status?: number; data?: unknown } }).response;
+      console.log("📅 UPDATE failed", {
+        eventId,
+        status: response?.status,
+        response: response?.data,
+      });
+      throw error;
+    }
+  }
+
+  async cancelEvent(eventId: string): Promise<{ eventId?: string } | null> {
+    const auth = buildOAuthClient();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    try {
+      const response = await calendar.events.delete({
+        calendarId: this.calendarId,
+        eventId,
+      });
+
+      console.log("📅 DELETE success", {
+        eventId,
+        status: response.status,
+        response: response.data,
+      });
+
+      return { eventId };
+    } catch (error) {
+      const response = (error as { response?: { status?: number; data?: unknown } }).response;
+      console.log("📅 DELETE failed", {
+        eventId,
+        status: response?.status,
+        response: response?.data,
+      });
+      throw error;
+    }
   }
 }

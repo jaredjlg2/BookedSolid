@@ -40,6 +40,8 @@ export interface BookingCreateAppointmentInput {
   reason: string;
   phone?: string;
   timezone?: string;
+  idempotencySource?: string;
+  toolCallId?: string;
 }
 
 export interface BookingCreateAppointmentOutput {
@@ -51,6 +53,53 @@ export interface BookingCreateAppointmentOutput {
   startISO: string;
   endISO: string;
   timezone: string;
+}
+
+export interface BookingFindAppointmentInput {
+  startISO?: string;
+  timezone?: string;
+  name?: string;
+  daysAhead?: number;
+}
+
+export interface BookingEventMatch {
+  eventId: string;
+  summary?: string;
+  description?: string;
+  startISO: string;
+  endISO: string;
+}
+
+export interface BookingFindAppointmentOutput {
+  matches: BookingEventMatch[];
+  timezone: string;
+}
+
+export interface BookingUpdateAppointmentInput {
+  eventId: string;
+  startISO: string;
+  endISO: string;
+  summary?: string;
+  description?: string;
+  timezone?: string;
+}
+
+export interface BookingUpdateAppointmentOutput {
+  updated: boolean;
+  eventId: string;
+  htmlLink?: string;
+  startISO: string;
+  endISO: string;
+  timezone: string;
+}
+
+export interface BookingCancelAppointmentInput {
+  eventId: string;
+}
+
+export interface BookingCancelAppointmentOutput {
+  cancelled: boolean;
+  eventId: string;
 }
 
 export class BookingToolError extends Error {
@@ -240,6 +289,8 @@ export async function createAppointment(
       description,
       location: "Phone call",
       timezone: timezoneName,
+      idempotencySource: input.idempotencySource,
+      toolCallId: input.toolCallId,
     });
 
     if (result?.eventId) {
@@ -264,5 +315,112 @@ export async function createAppointment(
       );
     }
     throw new BookingToolError("booking_error", "Unable to create appointment.");
+  }
+}
+
+export async function findAppointment(
+  input: BookingFindAppointmentInput
+): Promise<BookingFindAppointmentOutput> {
+  const timezoneName = resolveTimezone(input.timezone);
+  const windowStart = dayjs().tz(timezoneName).toDate();
+  const windowEnd = dayjs().tz(timezoneName).add(input.daysAhead ?? 30, "day").toDate();
+
+  try {
+    const adapter = getCalendarAdapter();
+    const events = await adapter.listEvents(windowStart, windowEnd);
+
+    let matches = events;
+    if (input.startISO) {
+      const target = dayjs.tz(input.startISO, timezoneName);
+      matches = matches.filter((event) => {
+        const eventStart = dayjs.tz(event.startISO, timezoneName);
+        return eventStart.isSame(target, "minute");
+      });
+    }
+
+    if (input.name) {
+      const needle = input.name.toLowerCase();
+      matches = matches.filter((event) => {
+        const summary = event.summary?.toLowerCase() ?? "";
+        const description = event.description?.toLowerCase() ?? "";
+        return summary.includes(needle) || description.includes(needle);
+      });
+    }
+
+    return {
+      matches: matches.map((event) => ({
+        eventId: event.id,
+        summary: event.summary,
+        description: event.description,
+        startISO: event.startISO,
+        endISO: event.endISO,
+      })),
+      timezone: timezoneName,
+    };
+  } catch (error) {
+    if (isBookingConfigError(error)) {
+      throw new BookingToolError(
+        "booking_not_configured",
+        "Google Calendar authentication failed."
+      );
+    }
+    throw new BookingToolError("booking_error", "Unable to find appointments.");
+  }
+}
+
+export async function updateAppointment(
+  input: BookingUpdateAppointmentInput
+): Promise<BookingUpdateAppointmentOutput> {
+  const timezoneName = resolveTimezone(input.timezone);
+  const start = new Date(input.startISO);
+  const end = new Date(input.endISO);
+
+  try {
+    const adapter = getCalendarAdapter();
+    const result = await adapter.updateEvent(input.eventId, {
+      start,
+      end,
+      summary: input.summary,
+      description: input.description,
+      timezone: timezoneName,
+    });
+
+    return {
+      updated: true,
+      eventId: result?.eventId ?? input.eventId,
+      htmlLink: result?.htmlLink,
+      startISO: start.toISOString(),
+      endISO: end.toISOString(),
+      timezone: timezoneName,
+    };
+  } catch (error) {
+    if (isBookingConfigError(error)) {
+      throw new BookingToolError(
+        "booking_not_configured",
+        "Google Calendar authentication failed."
+      );
+    }
+    throw new BookingToolError("booking_error", "Unable to update appointment.");
+  }
+}
+
+export async function cancelAppointment(
+  input: BookingCancelAppointmentInput
+): Promise<BookingCancelAppointmentOutput> {
+  try {
+    const adapter = getCalendarAdapter();
+    await adapter.cancelEvent(input.eventId);
+    return {
+      cancelled: true,
+      eventId: input.eventId,
+    };
+  } catch (error) {
+    if (isBookingConfigError(error)) {
+      throw new BookingToolError(
+        "booking_not_configured",
+        "Google Calendar authentication failed."
+      );
+    }
+    throw new BookingToolError("booking_error", "Unable to cancel appointment.");
   }
 }
