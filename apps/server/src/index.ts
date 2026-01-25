@@ -349,31 +349,39 @@ wss.on("connection", (twilioWs) => {
   };
 
   const sendPostCallSmsSummaries = async () => {
-    if (!env.ENABLE_POST_CALL_SMS) return;
-    if (mode !== "receptionist") return;
-    if (!callSummaryState.callSid) return;
-    if (sentPostCallSummaries.has(callSummaryState.callSid)) return;
+    if (!env.ENABLE_POST_CALL_SMS) {
+      console.log("Post-call SMS skipped: ENABLE_POST_CALL_SMS is disabled");
+      return;
+    }
+    if (mode !== "receptionist") {
+      console.log("Post-call SMS skipped: not in receptionist mode");
+      return;
+    }
+    if (!callSummaryState.callSid) {
+      console.log("Post-call SMS skipped: missing callSid");
+      return;
+    }
+    if (sentPostCallSummaries.has(callSummaryState.callSid)) {
+      console.log("Post-call SMS skipped: already sent for callSid", callSummaryState.callSid);
+      return;
+    }
     sentPostCallSummaries.add(callSummaryState.callSid);
 
     const ownerPhone = env.BUSINESS_OWNER_PHONE;
-    if (!ownerPhone) {
-      console.log("Post-call SMS skipped: missing BUSINESS_OWNER_PHONE");
-      return;
-    }
-
     const ownerBody = buildOwnerSummaryBody();
     const callerBody = buildCallerSummaryBody();
-    const isDev = process.env.NODE_ENV !== "production";
-    if (isDev) {
-      console.log("Post-call SMS body (owner):", ownerBody);
-      console.log("Post-call SMS body (caller):", callerBody);
-    }
+    console.log("Post-call SMS body (owner):", ownerBody);
+    console.log("Post-call SMS body (caller):", callerBody);
 
-    try {
-      const ownerMessage = await sendSms(ownerPhone, ownerBody);
-      console.log("SMS summary sent (owner)", { sid: ownerMessage.sid });
-    } catch (error) {
-      console.log("SMS summary failed (owner)", error);
+    if (!ownerPhone) {
+      console.log("Post-call SMS skipped: missing BUSINESS_OWNER_PHONE");
+    } else {
+      try {
+        const ownerMessage = await sendSms(ownerPhone, ownerBody);
+        console.log("SMS summary sent (owner)", { sid: ownerMessage.sid });
+      } catch (error) {
+        console.log("SMS summary failed (owner)", error);
+      }
     }
 
     const sendSummaryToCaller = env.SEND_SUMMARY_TO_CALLER ?? false;
@@ -384,6 +392,10 @@ wss.on("connection", (twilioWs) => {
       } catch (error) {
         console.log("SMS summary failed (caller)", error);
       }
+    } else if (sendSummaryToCaller) {
+      console.log("Post-call SMS skipped: invalid caller phone", callSummaryState.callerPhone);
+    } else {
+      console.log("Post-call SMS skipped: SEND_SUMMARY_TO_CALLER is disabled");
     }
   };
 
@@ -815,6 +827,10 @@ wss.on("connection", (twilioWs) => {
 
     if (msg.event === "stop") {
       console.log("Stream stop", msg.stop);
+      if (!callSid && typeof msg.stop?.callSid === "string") {
+        callSid = msg.stop.callSid;
+        callSummaryState.callSid = callSid;
+      }
       callSummaryState.endTimeMs = Date.now();
 
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
