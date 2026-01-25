@@ -83,6 +83,9 @@ DEFAULT_TIMEZONE=America/Phoenix
 APPT_DURATION_MINUTES=30
 APPT_BUFFER_MINUTES=10
 BOOKING_DRY_RUN=false
+BUSINESS_OWNER_PHONE=
+ENABLE_POST_CALL_SMS=true
+SEND_SUMMARY_TO_CALLER=false
 ```
 
 > **Note:** `PUBLIC_BASE_URL` is automatically set from Render's `RENDER_EXTERNAL_URL` if you don't provide it. You can still override it explicitly if needed.

@@ -365,7 +365,6 @@ wss.on("connection", (twilioWs) => {
       console.log("Post-call SMS skipped: already sent for callSid", callSummaryState.callSid);
       return;
     }
-    sentPostCallSummaries.add(callSummaryState.callSid);
 
     const ownerPhone = env.BUSINESS_OWNER_PHONE;
     const ownerBody = buildOwnerSummaryBody();
@@ -373,9 +372,12 @@ wss.on("connection", (twilioWs) => {
     console.log("Post-call SMS body (owner):", ownerBody);
     console.log("Post-call SMS body (caller):", callerBody);
 
+    let attemptedSend = false;
+
     if (!ownerPhone) {
       console.log("Post-call SMS skipped: missing BUSINESS_OWNER_PHONE");
     } else {
+      attemptedSend = true;
       try {
         const ownerMessage = await sendSms(ownerPhone, ownerBody);
         console.log("SMS summary sent (owner)", { sid: ownerMessage.sid });
@@ -386,6 +388,7 @@ wss.on("connection", (twilioWs) => {
 
     const sendSummaryToCaller = env.SEND_SUMMARY_TO_CALLER ?? false;
     if (sendSummaryToCaller && isDialableNumber(callSummaryState.callerPhone)) {
+      attemptedSend = true;
       try {
         const callerMessage = await sendSms(callSummaryState.callerPhone!, callerBody);
         console.log("SMS summary sent (caller)", { sid: callerMessage.sid });
@@ -396,6 +399,10 @@ wss.on("connection", (twilioWs) => {
       console.log("Post-call SMS skipped: invalid caller phone", callSummaryState.callerPhone);
     } else {
       console.log("Post-call SMS skipped: SEND_SUMMARY_TO_CALLER is disabled");
+    }
+
+    if (attemptedSend) {
+      sentPostCallSummaries.add(callSummaryState.callSid);
     }
   };
 
