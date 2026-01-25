@@ -48,6 +48,16 @@ export function connectOpenAIRealtime(options: RealtimeOptions = {}): WebSocket 
                     type: "string",
                     description: "Optional day in ISO format (YYYY-MM-DD) to check.",
                   },
+                  startISO: {
+                    type: "string",
+                    description:
+                      "Optional exact start time in ISO format. Use for specific-time availability checks.",
+                  },
+                  endISO: {
+                    type: "string",
+                    description:
+                      "Optional exact end time in ISO format. Defaults to startISO + duration.",
+                  },
                   timezone: {
                     type: "string",
                     description: "IANA timezone name (e.g., America/Phoenix).",

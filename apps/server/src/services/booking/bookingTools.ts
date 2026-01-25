@@ -18,6 +18,8 @@ export interface BookingCheckAvailabilityInput {
   timezone?: string;
   window?: AvailabilityWindow;
   durationMinutes?: number;
+  startISO?: string;
+  endISO?: string;
 }
 
 export interface BookingSlot {
@@ -98,7 +100,6 @@ export async function checkAvailability(
   input: BookingCheckAvailabilityInput
 ): Promise<BookingCheckAvailabilityOutput> {
   const timezoneName = resolveTimezone(input.timezone);
-  const { windowStart, windowEnd } = resolveWindow(input.dayISO, timezoneName);
   const durationMinutes = input.durationMinutes ?? env.APPT_DURATION_MINUTES ?? 30;
   const bufferMinutes = env.APPT_BUFFER_MINUTES ?? 10;
 
@@ -106,11 +107,46 @@ export async function checkAvailability(
     dayISO: input.dayISO,
     timezone: timezoneName,
     window: input.window,
+    startISO: input.startISO,
+    endISO: input.endISO,
     durationMinutes,
   });
 
   try {
     const adapter = getCalendarAdapter();
+    if (input.startISO) {
+      const start = dayjs.tz(input.startISO, timezoneName);
+      const end = input.endISO
+        ? dayjs.tz(input.endISO, timezoneName)
+        : start.add(durationMinutes, "minute");
+      const windowStart = start.toDate();
+      const windowEnd = end.toDate();
+      const queryStart = start.subtract(bufferMinutes, "minute").toDate();
+      const queryEnd = end.add(bufferMinutes, "minute").toDate();
+      const busyIntervals = await adapter.getAvailability(queryStart, queryEnd);
+      const slotFree = !isSlotBusy(windowStart, windowEnd, busyIntervals, bufferMinutes);
+      const slots = slotFree
+        ? [
+            {
+              startISO: windowStart.toISOString(),
+              endISO: windowEnd.toISOString(),
+            },
+          ]
+        : [];
+
+      console.log("📅 exact-time availability", {
+        startISO: windowStart.toISOString(),
+        endISO: windowEnd.toISOString(),
+        available: slotFree,
+      });
+
+      return {
+        slots,
+        timezone: timezoneName,
+      };
+    }
+
+    const { windowStart, windowEnd } = resolveWindow(input.dayISO, timezoneName);
     const busyIntervals = await adapter.getAvailability(windowStart, windowEnd);
     const slots = findAvailableSlots({
       busyIntervals,
@@ -147,6 +183,22 @@ export async function checkAvailability(
     }
     throw new BookingToolError("booking_error", "Unable to check availability.");
   }
+}
+
+function isSlotBusy(
+  start: Date,
+  end: Date,
+  busyIntervals: { start: Date; end: Date }[],
+  bufferMinutes: number
+) {
+  const bufferMs = bufferMinutes * 60 * 1000;
+  const slotStart = start.getTime();
+  const slotEnd = end.getTime();
+  return busyIntervals.some((interval) => {
+    const busyStart = interval.start.getTime() - bufferMs;
+    const busyEnd = interval.end.getTime() + bufferMs;
+    return slotStart < busyEnd && slotEnd > busyStart;
+  });
 }
 
 export async function createAppointment(
