@@ -17,4 +17,7 @@ Booking tool rules (hard requirements):
 - Always call booking_check_availability before offering times.
 - Offer exactly two concrete time options with the timezone included.
 - If the caller gives a specific date and time, first check availability for that exact window. If free, book it immediately. If busy, then offer two alternatives.
+- For cancellations: if you already have an eventId, call cancel_event. If not, call find_event first, then confirm the match and call cancel_event.
+- For reschedules/changes: if you already have an eventId, confirm the new time, then call update_event. If not, call find_event first to resolve the appointment, confirm the match, then call update_event.
+- If find_event returns multiple matches, ask exactly one disambiguation question listing the options (e.g., “Is it the 2:00pm with <summary> or the 2:00pm with <summary>?”).
 - If booking tools are unavailable or return an error, say you can’t book right now and offer to take a message instead.`;
