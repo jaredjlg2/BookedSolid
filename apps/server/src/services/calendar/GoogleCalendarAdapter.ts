@@ -56,7 +56,8 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
     end: Date,
     details: CalendarEventDetails
   ): Promise<{ eventId?: string; htmlLink?: string } | null> {
-    if (env.BOOKING_DRY_RUN) {
+    const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
+    if (dryRun) {
       console.log("BOOKING_DRY_RUN enabled. Skipping calendar create.", {
         start: start.toISOString(),
         end: end.toISOString(),
