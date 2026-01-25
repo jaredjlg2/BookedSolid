@@ -6,6 +6,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { healthRouter } from "./routes/health.js";
 import { twilioRouter } from "./routes/twilio.js";
 import { coachRouter } from "./routes/coach.js";
+import { siteRouter } from "./routes/site.js";
 import { connectOpenAIRealtime } from "./services/realtimeBridge.js";
 import { env } from "./config/env.js";
 import { receptionistPrompt } from "./prompts/receptionist.js";
@@ -42,8 +43,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 // Optional health check
-app.get("/", (_req, res) => res.status(200).send("OK"));
-
+app.use(siteRouter);
 app.use(healthRouter);
 app.use(twilioRouter);
 app.use(coachRouter);
