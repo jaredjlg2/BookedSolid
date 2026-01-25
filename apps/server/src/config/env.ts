@@ -8,6 +8,9 @@ const EnvSchema = z.object({
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),
   TWILIO_FROM_NUMBER: z.string().optional(),
+  OWNER_FORWARD_NUMBER: z.string().optional(),
+  RING_TIMEOUT_SECONDS: z.coerce.number().default(18),
+  ENABLE_RING_THEN_AI: z.coerce.boolean().default(false),
 
   PUBLIC_BASE_URL: z.string().optional(),
   COACH_ADMIN_KEY: z.string().optional(),

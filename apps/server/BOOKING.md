@@ -21,6 +21,10 @@ TWILIO_FROM_NUMBER=
 BUSINESS_OWNER_PHONE=
 ENABLE_POST_CALL_SMS=true
 SEND_SUMMARY_TO_CALLER=false
+OWNER_FORWARD_NUMBER=
+RING_TIMEOUT_SECONDS=18
+ENABLE_RING_THEN_AI=true
+PUBLIC_BASE_URL=
 ```
 
 ## Generate a Google refresh token (one time)
@@ -60,6 +64,22 @@ ngrok http 3000
 
 3. Set `PUBLIC_BASE_URL` to the HTTPS ngrok URL.
 4. Configure Twilio voice webhook to `POST /twilio/voice`.
+
+## Inbound call routing (ring then AI)
+
+Set the following env vars to have the receptionist ring the owner first and fall back to AI:
+
+```
+OWNER_FORWARD_NUMBER=+15555550123
+RING_TIMEOUT_SECONDS=18
+ENABLE_RING_THEN_AI=true
+PUBLIC_BASE_URL=https://your-public-url
+```
+
+## Manual test checklist
+
+1. Call the business number and answer on the owner phone before the timeout → caller connects to owner, no AI.
+2. Call again and do not answer on the owner phone → after the timeout, the AI receptionist answers and continues.
 
 ## Troubleshooting
 
