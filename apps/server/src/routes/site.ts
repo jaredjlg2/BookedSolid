@@ -303,7 +303,7 @@ function buildHomepageHtml() {
           </div>
         </div>
         <div class="hero-image">
-          <img src="/assets/hero-bookedsolid.jpg" alt="BookedSolid brand graphic with scheduling icons" />
+          <img src="/assets/hero-bookedsolid.png" alt="BookedSolid brand graphic with scheduling icons" />
         </div>
       </div>
     </header>
