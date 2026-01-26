@@ -295,8 +295,7 @@ function buildHomepageHtml() {
           <p>
             ${businessName} combines a 24/7 AI receptionist with thoughtful customer care
             so your business is always responsive. We answer questions, schedule
-            appointments, and follow up automatically so you win more work without the
-            admin overhead.
+            appointments, so you win more work without the admin overhead.
           </p>
           <div class="hero-actions">
             <span>Direct line: <strong>${phoneNumber ?? "Call for details"}</strong></span>
