@@ -2,6 +2,8 @@
 import "./config/env.js";
 import http from "http";
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import WebSocket, { WebSocketServer } from "ws";
 import { healthRouter } from "./routes/health.js";
 import { twilioRouter } from "./routes/twilio.js";
@@ -38,9 +40,14 @@ const PORT = Number(process.env.PORT || 3000);
 
 const app = express();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const assetsDir = path.join(__dirname, "../assets");
+
 app.set("trust proxy", true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+app.use("/assets", express.static(assetsDir));
 
 // Optional health check
 app.use(siteRouter);
