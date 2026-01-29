@@ -594,12 +594,33 @@ What neighborhoods do you service?"
           "! I’ll send a confirmation and follow up if we need more details."
       ];
 
-      demoForm?.addEventListener("submit", (event) => {
-        event.preventDefault();
+      const speakLine = (line) => {
+        if (!("speechSynthesis" in window)) return;
+        const utterance = new SpeechSynthesisUtterance(line);
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        window.speechSynthesis.speak(utterance);
+      };
+
+      const requestMicrophone = async () => {
+        if (!navigator.mediaDevices?.getUserMedia) return false;
+        demoStatus.textContent = "Requesting microphone access...";
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((track) => track.stop());
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const runDemo = async () => {
         if (!demoStatus || !demoSummary || !demoTranscript) return;
 
-        const ownerName = document.getElementById("demo-name")?.value.trim() || "there";
-        const hours = document.getElementById("demo-hours")?.value.trim() || "your posted hours";
+        const ownerName =
+          document.getElementById("demo-name")?.value.trim() || "there";
+        const hours =
+          document.getElementById("demo-hours")?.value.trim() || "your posted hours";
         const faqText = document.getElementById("demo-faq")?.value || "";
         const faqLines = faqText
           .split("\n")
@@ -614,24 +635,33 @@ What neighborhoods do you service?"
           businessName: "${businessName}"
         };
 
-        demoStatus.textContent = "Demo call in progress...";
+        const micGranted = await requestMicrophone();
+        demoStatus.textContent = micGranted
+          ? "Demo call in progress..."
+          : "Microphone blocked. Running demo in text-only mode.";
         demoSummary.textContent =
           "Showing how BookedSolid answers for " + data.businessName + " using your details.";
         demoTranscript.innerHTML = "";
 
-        demoLines.forEach((lineBuilder, index) => {
+        for (const lineBuilder of demoLines) {
+          const line = lineBuilder(data);
           const item = document.createElement("li");
-          item.textContent = lineBuilder(data);
+          item.textContent = line;
           item.style.opacity = "0";
           demoTranscript.appendChild(item);
-          setTimeout(() => {
+          requestAnimationFrame(() => {
             item.style.opacity = "1";
-          }, 250 * (index + 1));
-        });
+          });
+          speakLine(line);
+          await new Promise((resolve) => setTimeout(resolve, 900));
+        }
 
-        setTimeout(() => {
-          demoStatus.textContent = "Demo complete. Ready for the next call.";
-        }, 250 * (demoLines.length + 2));
+        demoStatus.textContent = "Demo complete. Ready for the next call.";
+      };
+
+      demoForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await runDemo();
       });
     </script>
   </body>
