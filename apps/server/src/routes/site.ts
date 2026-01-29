@@ -194,6 +194,86 @@ function buildHomepageHtml() {
         gap: 20px;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       }
+      .demo-grid {
+        display: grid;
+        gap: 24px;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+      .demo-card {
+        background: var(--card);
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        padding: 20px;
+        display: grid;
+        gap: 14px;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+      }
+      .demo-card label {
+        font-weight: 600;
+        display: grid;
+        gap: 8px;
+        color: var(--text);
+      }
+      .demo-card input,
+      .demo-card textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        font-family: inherit;
+        font-size: 0.95rem;
+      }
+      .demo-card textarea {
+        min-height: 140px;
+        resize: vertical;
+      }
+      .primary-button {
+        border: none;
+        border-radius: 999px;
+        padding: 12px 18px;
+        background: var(--primary);
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 1rem;
+      }
+      .primary-button:hover {
+        background: #1e40af;
+      }
+      .call-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .call-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #e0f2fe;
+        color: #0369a1;
+        font-size: 0.85rem;
+      }
+      .call-summary {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .call-transcript {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 10px;
+      }
+      .call-transcript li {
+        background: #f8fafc;
+        border-radius: 12px;
+        padding: 10px 12px;
+        border: 1px solid #e2e8f0;
+      }
       .media-card {
         background: var(--card);
         border-radius: 18px;
@@ -285,6 +365,7 @@ function buildHomepageHtml() {
           <a href="#impact">Impact</a>
           <a href="#insights">Insights</a>
           <a href="#process">Process</a>
+          <a href="#demo">Demo</a>
           <a href="#contact">Contact</a>
         </nav>
       </div>
@@ -417,6 +498,52 @@ function buildHomepageHtml() {
         </div>
       </section>
 
+      <section id="demo" class="section">
+        <h2>Experience the voice receptionist in action.</h2>
+        <p class="section-lead">
+          Share your name, business hours, and FAQs to hear a simulated call. We’ll show how
+          the receptionist answers common questions and guides callers to the next step.
+        </p>
+        <div class="demo-grid">
+          <form id="demo-form" class="demo-card">
+            <label>
+              Your name
+              <input id="demo-name" name="name" type="text" placeholder="Jordan Lee" required />
+            </label>
+            <label>
+              Business hours
+              <input
+                id="demo-hours"
+                name="hours"
+                type="text"
+                placeholder="Mon–Fri, 9am–6pm"
+                required
+              />
+            </label>
+            <label>
+              FAQs (one per line)
+              <textarea
+                id="demo-faq"
+                name="faq"
+                placeholder="Do you offer same-day appointments?
+What neighborhoods do you service?"
+              ></textarea>
+            </label>
+            <button class="primary-button" type="submit">Start demo call</button>
+          </form>
+          <div class="demo-card demo-output">
+            <div class="call-status">
+              <span class="call-pill">Demo ready</span>
+              <span id="demo-status">Fill in the form to begin.</span>
+            </div>
+            <div id="demo-summary" class="call-summary">
+              We’ll personalize the script based on your inputs so you can hear how calls are handled.
+            </div>
+            <ul id="demo-transcript" class="call-transcript"></ul>
+          </div>
+        </div>
+      </section>
+
       <section id="contact" class="section">
         <h2>Let’s keep your calendar full.</h2>
         <p class="section-lead">
@@ -438,6 +565,75 @@ function buildHomepageHtml() {
         <p>Questions? Reach us at ${contactEmail}.</p>
       </footer>
     </main>
+    <script>
+      const demoForm = document.getElementById("demo-form");
+      const demoStatus = document.getElementById("demo-status");
+      const demoSummary = document.getElementById("demo-summary");
+      const demoTranscript = document.getElementById("demo-transcript");
+
+      const demoLines = [
+        (data) =>
+          "Caller: Hi, I’d like to book an appointment with " + data.businessName + ".",
+        (data) =>
+          "AI Receptionist: Thanks for calling " +
+          data.businessName +
+          ". I can help with booking, hours, or pricing.",
+        (data) => "Caller: Are you open " + data.hours + "?",
+        (data) =>
+          "AI Receptionist: Yes, we’re open " +
+          data.hours +
+          ". Would you like the next available slot?",
+        (data) =>
+          "Caller: I also wanted to ask: " +
+          (data.faqHighlight || "Do you offer same-day appointments?"),
+        (data) =>
+          "AI Receptionist: Great question. I can share your FAQ answer and get you booked right away.",
+        (data) =>
+          "AI Receptionist: Thanks, " +
+          data.ownerName +
+          "! I’ll send a confirmation and follow up if we need more details."
+      ];
+
+      demoForm?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!demoStatus || !demoSummary || !demoTranscript) return;
+
+        const ownerName = document.getElementById("demo-name")?.value.trim() || "there";
+        const hours = document.getElementById("demo-hours")?.value.trim() || "your posted hours";
+        const faqText = document.getElementById("demo-faq")?.value || "";
+        const faqLines = faqText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const faqHighlight = faqLines[0];
+
+        const data = {
+          ownerName,
+          hours,
+          faqHighlight,
+          businessName: "${businessName}"
+        };
+
+        demoStatus.textContent = "Demo call in progress...";
+        demoSummary.textContent =
+          "Showing how BookedSolid answers for " + data.businessName + " using your details.";
+        demoTranscript.innerHTML = "";
+
+        demoLines.forEach((lineBuilder, index) => {
+          const item = document.createElement("li");
+          item.textContent = lineBuilder(data);
+          item.style.opacity = "0";
+          demoTranscript.appendChild(item);
+          setTimeout(() => {
+            item.style.opacity = "1";
+          }, 250 * (index + 1));
+        });
+
+        setTimeout(() => {
+          demoStatus.textContent = "Demo complete. Ready for the next call.";
+        }, 250 * (demoLines.length + 2));
+      });
+    </script>
   </body>
 </html>`;
 }
