@@ -143,7 +143,7 @@ function buildRingThenAiResponse({
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="${timeoutSeconds}" answerOnBridge="true">
+  <Dial timeout="${timeoutSeconds}" answerOnBridge="false">
     <Number>${ownerNumber}</Number>
   </Dial>
   <Say voice="alice">${greeting}</Say>
