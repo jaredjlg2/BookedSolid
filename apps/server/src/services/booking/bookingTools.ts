@@ -317,14 +317,18 @@ export async function createAppointment(
     });
 
     const created = Boolean(result?.eventId);
-    if (created) {
-      console.log("📅 event created", { eventId: result?.eventId });
-    } else {
+    if (!created) {
       console.log("📅 event creation unconfirmed; missing event id", {
         startISO: start.toISOString(),
         endISO: end.toISOString(),
       });
+      throw new BookingToolError(
+        "booking_error",
+        "Unable to confirm appointment booking."
+      );
     }
+
+    console.log("📅 event created", { eventId: result?.eventId });
 
     return {
       dryRun: false,
@@ -337,6 +341,9 @@ export async function createAppointment(
       timezone: timezoneName,
     };
   } catch (error) {
+    if (error instanceof BookingToolError) {
+      throw error;
+    }
     if (isBookingConfigError(error)) {
       throw new BookingToolError(
         "booking_not_configured",
