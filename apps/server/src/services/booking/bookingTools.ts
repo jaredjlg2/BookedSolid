@@ -316,13 +316,19 @@ export async function createAppointment(
       toolCallId: input.toolCallId,
     });
 
-    if (result?.eventId) {
-      console.log("📅 event created", { eventId: result.eventId });
+    const created = Boolean(result?.eventId);
+    if (created) {
+      console.log("📅 event created", { eventId: result?.eventId });
+    } else {
+      console.log("📅 event creation unconfirmed; missing event id", {
+        startISO: start.toISOString(),
+        endISO: end.toISOString(),
+      });
     }
 
     return {
       dryRun: false,
-      created: true,
+      created,
       eventId: result?.eventId,
       htmlLink: result?.htmlLink,
       summary,

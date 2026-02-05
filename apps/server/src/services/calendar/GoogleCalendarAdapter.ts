@@ -175,6 +175,14 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       })
     )
       .then((response) => {
+        if (!response.data.id) {
+          console.log("📅 INSERT missing event id", {
+            idempotencyKey,
+            toolCallId,
+            response: response.data,
+          });
+          throw new Error("Calendar insert returned no event id.");
+        }
         idempotencyCache.set(idempotencyKey, {
           status: "done",
           eventId: response.data.id ?? undefined,
