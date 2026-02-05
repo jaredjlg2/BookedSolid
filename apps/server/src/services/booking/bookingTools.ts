@@ -126,8 +126,8 @@ function isBookingConfigError(error: unknown) {
   );
 }
 
-function resolveTimezone(inputTimezone?: string) {
-  return inputTimezone ?? env.DEFAULT_TIMEZONE ?? "America/Phoenix";
+function resolveTimezone() {
+  return env.DEFAULT_TIMEZONE ?? "America/Phoenix";
 }
 
 function resolveWindow(dayISO: string | undefined, tz: string) {
@@ -149,7 +149,7 @@ export async function checkAvailability(
   input: BookingCheckAvailabilityInput
 ): Promise<BookingCheckAvailabilityOutput> {
   const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
-  const timezoneName = resolveTimezone(input.timezone);
+  const timezoneName = resolveTimezone();
   const durationMinutes = input.durationMinutes ?? env.APPT_DURATION_MINUTES ?? 30;
   const bufferMinutes = env.APPT_BUFFER_MINUTES ?? 10;
 
@@ -277,9 +277,9 @@ export async function createAppointment(
   input: BookingCreateAppointmentInput
 ): Promise<BookingCreateAppointmentOutput> {
   const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
-  const timezoneName = resolveTimezone(input.timezone);
-  const start = new Date(input.startISO);
-  const end = new Date(input.endISO);
+  const timezoneName = resolveTimezone();
+  const start = dayjs.tz(input.startISO, timezoneName).toDate();
+  const end = dayjs.tz(input.endISO, timezoneName).toDate();
   const title = `Call Booking – ${input.name}`;
   const summary = `Caller requested: ${input.reason}.`;
   const description = [
@@ -357,7 +357,7 @@ export async function createAppointment(
 export async function findAppointment(
   input: BookingFindAppointmentInput
 ): Promise<BookingFindAppointmentOutput> {
-  const timezoneName = resolveTimezone(input.timezone);
+  const timezoneName = resolveTimezone();
   const windowStart = dayjs().tz(timezoneName).toDate();
   const windowEnd = dayjs().tz(timezoneName).add(input.daysAhead ?? 30, "day").toDate();
 
@@ -407,24 +407,58 @@ export async function findAppointment(
 export async function updateAppointment(
   input: BookingUpdateAppointmentInput
 ): Promise<BookingUpdateAppointmentOutput> {
-  const timezoneName = resolveTimezone(input.timezone);
-  const start = new Date(input.startISO);
-  const end = new Date(input.endISO);
+  const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
+  const timezoneName = resolveTimezone();
+  const start = dayjs.tz(input.startISO, timezoneName).toDate();
+  const end = dayjs.tz(input.endISO, timezoneName).toDate();
+  const bufferMinutes = env.APPT_BUFFER_MINUTES ?? 10;
 
   try {
+    if (dryRun) {
+      return {
+        updated: false,
+        eventId: input.eventId,
+        startISO: start.toISOString(),
+        endISO: end.toISOString(),
+        timezone: timezoneName,
+      };
+    }
     const adapter = getCalendarAdapter();
-    const result = await adapter.updateEvent(input.eventId, {
-      start,
-      end,
-      summary: input.summary,
-      description: input.description,
+    const queryStart = dayjs(start).subtract(bufferMinutes, "minute").toDate();
+    const queryEnd = dayjs(end).add(bufferMinutes, "minute").toDate();
+    const busyIntervals = dryRun ? [] : await adapter.getAvailability(queryStart, queryEnd);
+    const slotFree = !isSlotBusy(start, end, busyIntervals, bufferMinutes);
+    if (!slotFree) {
+      throw new BookingToolError(
+        "booking_error",
+        "The requested time is not available."
+      );
+    }
+
+    const title = input.summary ?? "Call Booking – Rescheduled";
+    const description = input.description ?? "Rescheduled appointment.";
+    const createResult = await adapter.createEvent(start, end, {
+      title,
+      description,
+      location: "Phone call",
       timezone: timezoneName,
+      idempotencySource: `reschedule:${input.eventId}`,
     });
+
+    const created = Boolean(createResult?.eventId);
+    if (!created) {
+      throw new BookingToolError(
+        "booking_error",
+        "Unable to confirm appointment reschedule."
+      );
+    }
+
+    await adapter.cancelEvent(input.eventId);
 
     return {
       updated: true,
-      eventId: result?.eventId ?? input.eventId,
-      htmlLink: result?.htmlLink,
+      eventId: createResult?.eventId ?? input.eventId,
+      htmlLink: createResult?.htmlLink,
       startISO: start.toISOString(),
       endISO: end.toISOString(),
       timezone: timezoneName,
