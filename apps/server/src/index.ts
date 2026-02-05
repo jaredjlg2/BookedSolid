@@ -508,6 +508,28 @@ wss.on("connection", (twilioWs) => {
     console.log("🗣️ calendar filler emitted before tool call", { toolName, toolCallId });
   };
 
+  const sendBookingFailureResponse = (options: { reason: string }) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    const instructions = `Tell the caller: "${options.reason}" Keep it short and offer to take a message or have someone follow up.`;
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions,
+        },
+      })
+    );
+  };
+
+  const sendBookingFailureNotice = (result: BookingCreateAppointmentOutput) => {
+    if (result.created) return;
+    const message = result.dryRun
+      ? "I'm in test mode, so I can't finalize that booking. Would you like to leave a message or have someone follow up?"
+      : "I wasn't able to book that appointment right now. Would you like to leave a message or have someone follow up?";
+    sendBookingFailureResponse({ reason: message });
+  };
+
   const buildAppointmentDedupeKey = (startISO: string, endISO: string) => {
     const sessionId = callSid ?? streamSid ?? "unknown-session";
     return `${sessionId}:${startISO}:${endISO}`;
@@ -605,6 +627,7 @@ wss.on("connection", (twilioWs) => {
         callSummaryState.appointmentBooked = result.created;
         callSummaryState.appointmentStartISO = result.startISO;
         sendToolOutputCached(toolCall.callId, result);
+        sendBookingFailureNotice(result);
         return;
       }
       if (toolCall.name === "find_event") {
@@ -674,6 +697,12 @@ wss.on("connection", (twilioWs) => {
         sendToolOutputCached(toolCall.callId, {
           error: { code: error.code, message: error.message },
         });
+        if (toolCall.name === "booking_create_appointment") {
+          sendBookingFailureResponse({
+            reason:
+              "I couldn't book that appointment right now. Would you like to leave a message or have someone follow up?",
+          });
+        }
         return;
       }
       sendToolOutputCached(toolCall.callId, {
