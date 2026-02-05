@@ -60,17 +60,26 @@ function buildStreamParameters({
   businessId?: string;
 }) {
   const params = [
-    `<Parameter name="mode" value="${mode}" />`,
-    userId ? `<Parameter name="userId" value="${userId}" />` : "",
-    fromNumber ? `<Parameter name="from" value="${fromNumber}" />` : "",
-    toNumber ? `<Parameter name="to" value="${toNumber}" />` : "",
-    callSid ? `<Parameter name="callSid" value="${callSid}" />` : "",
-    businessId ? `<Parameter name="businessId" value="${businessId}" />` : "",
+    `<Parameter name="mode" value="${escapeXml(mode)}" />`,
+    userId ? `<Parameter name="userId" value="${escapeXml(userId)}" />` : "",
+    fromNumber ? `<Parameter name="from" value="${escapeXml(fromNumber)}" />` : "",
+    toNumber ? `<Parameter name="to" value="${escapeXml(toNumber)}" />` : "",
+    callSid ? `<Parameter name="callSid" value="${escapeXml(callSid)}" />` : "",
+    businessId ? `<Parameter name="businessId" value="${escapeXml(businessId)}" />` : "",
   ]
     .filter(Boolean)
     .join("\n    ");
 
   return params;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function buildVoiceResponse({
@@ -103,9 +112,9 @@ function buildVoiceResponse({
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">${greeting}</Say>
+  <Say voice="alice">${escapeXml(greeting)}</Say>
   <Connect>
-    <Stream url="${streamUrl}">
+    <Stream url="${escapeXml(streamUrl)}">
     ${params}
     </Stream>
   </Connect>
@@ -144,11 +153,11 @@ function buildRingThenAiResponse({
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial timeout="${timeoutSeconds}" answerOnBridge="false">
-    <Number>${ownerNumber}</Number>
+    <Number>${escapeXml(ownerNumber)}</Number>
   </Dial>
-  <Say voice="alice">${greeting}</Say>
+  <Say voice="alice">${escapeXml(greeting)}</Say>
   <Connect>
-    <Stream url="${streamUrl}">
+    <Stream url="${escapeXml(streamUrl)}">
     ${params}
     </Stream>
   </Connect>
@@ -158,7 +167,7 @@ function buildRingThenAiResponse({
 function buildUnavailableResponse(message: string) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">${message}</Say>
+  <Say voice="alice">${escapeXml(message)}</Say>
   <Hangup />
 </Response>`;
 }
