@@ -148,6 +148,7 @@ function resolveWindow(dayISO: string | undefined, tz: string) {
 export async function checkAvailability(
   input: BookingCheckAvailabilityInput
 ): Promise<BookingCheckAvailabilityOutput> {
+  const dryRun = (process.env.BOOKING_DRY_RUN ?? "").toLowerCase() === "true";
   const timezoneName = resolveTimezone(input.timezone);
   const durationMinutes = input.durationMinutes ?? env.APPT_DURATION_MINUTES ?? 30;
   const bufferMinutes = env.APPT_BUFFER_MINUTES ?? 10;
@@ -162,7 +163,6 @@ export async function checkAvailability(
   });
 
   try {
-    const adapter = getCalendarAdapter();
     if (input.startISO) {
       const start = dayjs.tz(input.startISO, timezoneName);
       const end = input.endISO
@@ -170,6 +170,24 @@ export async function checkAvailability(
         : start.add(durationMinutes, "minute");
       const windowStart = start.toDate();
       const windowEnd = end.toDate();
+      if (dryRun) {
+        console.log("📅 BOOKING_DRY_RUN enabled. Skipping calendar availability check.", {
+          startISO: windowStart.toISOString(),
+          endISO: windowEnd.toISOString(),
+        });
+        return {
+          slots: [
+            {
+              startISO: windowStart.toISOString(),
+              endISO: windowEnd.toISOString(),
+            },
+          ],
+          timezone: timezoneName,
+          notes: "Booking dry run enabled; availability not checked against calendar.",
+        };
+      }
+
+      const adapter = getCalendarAdapter();
       const queryStart = start.subtract(bufferMinutes, "minute").toDate();
       const queryEnd = end.add(bufferMinutes, "minute").toDate();
       const busyIntervals = await adapter.getAvailability(queryStart, queryEnd);
@@ -196,7 +214,9 @@ export async function checkAvailability(
     }
 
     const { windowStart, windowEnd } = resolveWindow(input.dayISO, timezoneName);
-    const busyIntervals = await adapter.getAvailability(windowStart, windowEnd);
+    const busyIntervals = dryRun
+      ? []
+      : await getCalendarAdapter().getAvailability(windowStart, windowEnd);
     const slots = findAvailableSlots({
       busyIntervals,
       windowStart,
@@ -222,6 +242,9 @@ export async function checkAvailability(
     return {
       slots: outputSlots,
       timezone: timezoneName,
+      notes: dryRun
+        ? "Booking dry run enabled; availability not checked against calendar."
+        : undefined,
     };
   } catch (error) {
     if (isBookingConfigError(error)) {
