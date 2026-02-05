@@ -250,6 +250,7 @@ wss.on("connection", (twilioWs) => {
   let assistantBuffer = "";
   let optedOut = false;
   const processedToolCalls = new Map<string, unknown>();
+  const inflightToolCalls = new Set<string>();
   const recentAppointments = new Map<
     string,
     { timestamp: number; result: BookingCreateAppointmentOutput }
@@ -511,6 +512,7 @@ wss.on("connection", (twilioWs) => {
 
   const sendToolOutputCached = (toolCallId: string, output: unknown) => {
     processedToolCalls.set(toolCallId, output);
+    inflightToolCalls.delete(toolCallId);
     sendToolOutput(toolCallId, output);
   };
 
@@ -606,6 +608,14 @@ wss.on("connection", (twilioWs) => {
       sendToolOutput(toolCall.callId, cachedOutput);
       return;
     }
+    if (inflightToolCalls.has(toolCall.callId)) {
+      console.log("⏳ tool_call_id inflight; skipping duplicate", {
+        toolCallId: toolCall.callId,
+        toolName: toolCall.name,
+      });
+      return;
+    }
+    inflightToolCalls.add(toolCall.callId);
 
     if (
       toolCall.name === "booking_check_availability" ||
