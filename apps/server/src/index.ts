@@ -255,6 +255,10 @@ wss.on("connection", (twilioWs) => {
     { timestamp: number; result: BookingCreateAppointmentOutput }
   >();
   const appointmentDedupeWindowMs = 2 * 60 * 1000;
+  const bookingClaimRegex = /\b(appointment\s+)?(booked|scheduled|confirmed|set up|locked in)\b/i;
+  let lastBookingCreateResult: BookingCreateAppointmentOutput | null = null;
+  let lastBookingCreateCallId: string | null = null;
+  let bookingCorrectionSent = false;
 
   const metrics = {
     simplifications: 0,
@@ -442,6 +446,23 @@ wss.on("connection", (twilioWs) => {
 
   const finalizeAssistantText = () => {
     if (mode !== "spanish_coach") {
+      const assistantText = assistantBuffer.trim();
+      if (assistantText.length > 0) {
+        console.log("🗣️ assistant response", { text: assistantText });
+        const bookingClaimed = bookingClaimRegex.test(assistantText);
+        const bookingConfirmed = lastBookingCreateResult?.created === true;
+        if (bookingClaimed && !bookingConfirmed) {
+          console.log("⚠️ booking claim without confirmed appointment", {
+            assistantText,
+            lastBookingCreateCallId,
+            lastBookingCreateResult,
+          });
+          const reason = lastBookingCreateResult?.dryRun
+            ? "Just to clarify, I'm in test mode and couldn't finalize that booking. Would you like to leave a message or have someone follow up?"
+            : "Just to clarify, that appointment is not booked yet. Would you like to leave a message or have someone follow up?";
+          sendBookingCorrection(reason);
+        }
+      }
       assistantBuffer = "";
       return;
     }
@@ -530,6 +551,37 @@ wss.on("connection", (twilioWs) => {
     sendBookingFailureResponse({ reason: message });
   };
 
+  const sendBookingCorrection = (reason: string) => {
+    if (bookingCorrectionSent) return;
+    bookingCorrectionSent = true;
+    console.log("⚠️ booking clarification sent", { reason });
+    sendBookingFailureResponse({ reason });
+  };
+
+  const logBookingCreateResult = (
+    result: BookingCreateAppointmentOutput,
+    context: { toolCallId: string; dedupeKey?: string | null }
+  ) => {
+    console.log("📅 booking_create_appointment result", {
+      toolCallId: context.toolCallId,
+      dedupeKey: context.dedupeKey ?? null,
+      created: result.created,
+      dryRun: result.dryRun,
+      startISO: result.startISO,
+      endISO: result.endISO,
+      eventId: result.eventId ?? null,
+    });
+    if (!result.created) {
+      console.log("⚠️ booking_create_appointment not created", {
+        toolCallId: context.toolCallId,
+        dryRun: result.dryRun,
+        hint: result.dryRun
+          ? "BOOKING_DRY_RUN is true; calendar events are not created."
+          : "Calendar adapter did not confirm event creation. Check calendar credentials/logs.",
+      });
+    }
+  };
+
   const buildAppointmentDedupeKey = (startISO: string, endISO: string) => {
     const sessionId = callSid ?? streamSid ?? "unknown-session";
     return `${sessionId}:${startISO}:${endISO}`;
@@ -549,6 +601,7 @@ wss.on("connection", (twilioWs) => {
       console.log("🔁 tool_call_id dedupe hit", {
         toolCallId: toolCall.callId,
         toolName: toolCall.name,
+        cachedOutput,
       });
       sendToolOutput(toolCall.callId, cachedOutput);
       return;
@@ -564,6 +617,11 @@ wss.on("connection", (twilioWs) => {
       sendCalendarFiller(toolCall.name, toolCall.callId);
     }
 
+    console.log("🧰 tool call received", {
+      toolName: toolCall.name,
+      toolCallId: toolCall.callId,
+      rawArguments: toolCall.arguments,
+    });
     let parsedArgs: Record<string, unknown> = {};
     if (typeof toolCall.arguments === "string" && toolCall.arguments.trim().length > 0) {
       try {
@@ -578,6 +636,11 @@ wss.on("connection", (twilioWs) => {
     } else if (typeof toolCall.arguments === "object" && toolCall.arguments !== null) {
       parsedArgs = toolCall.arguments as Record<string, unknown>;
     }
+    console.log("🧰 tool call parsed", {
+      toolName: toolCall.name,
+      toolCallId: toolCall.callId,
+      parsedArgs,
+    });
 
     try {
       if (toolCall.name === "booking_check_availability") {
@@ -609,6 +672,13 @@ wss.on("connection", (twilioWs) => {
             dedupeKey,
             toolCallId: toolCall.callId,
           });
+          lastBookingCreateResult = existing.result;
+          lastBookingCreateCallId = toolCall.callId;
+          bookingCorrectionSent = false;
+          logBookingCreateResult(existing.result, {
+            toolCallId: toolCall.callId,
+            dedupeKey,
+          });
           sendToolOutputCached(toolCall.callId, existing.result);
           return;
         }
@@ -624,6 +694,10 @@ wss.on("connection", (twilioWs) => {
           dedupeKey,
           toolCallId: toolCall.callId,
         });
+        lastBookingCreateResult = result;
+        lastBookingCreateCallId = toolCall.callId;
+        bookingCorrectionSent = false;
+        logBookingCreateResult(result, { toolCallId: toolCall.callId, dedupeKey });
         callSummaryState.appointmentBooked = result.created;
         callSummaryState.appointmentStartISO = result.startISO;
         sendToolOutputCached(toolCall.callId, result);
@@ -754,6 +828,9 @@ wss.on("connection", (twilioWs) => {
       callSummaryState.businessPhone = businessPhone;
       callSummaryState.startTimeMs = Date.now();
       callSummaryState.endTimeMs = null;
+      lastBookingCreateResult = null;
+      lastBookingCreateCallId = null;
+      bookingCorrectionSent = false;
 
       console.log("Stream start", msg.start);
 
