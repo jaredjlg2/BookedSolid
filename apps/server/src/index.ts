@@ -247,9 +247,14 @@ wss.on("connection", (twilioWs) => {
   let mode: "receptionist" | "spanish_coach" = "receptionist";
   let pendingGreeting = false;
   let openaiWs: WebSocket | null = null;
+  let openaiListenersAttached = false;
   let assistantBuffer = "";
   let optedOut = false;
   const processedToolCalls = new Map<string, unknown>();
+  const handledToolCallIds = new Set<string>();
+  let activeResponseId: string | null = null;
+  let activeResponseInFlight = false;
+  let promptHasCalendarFillerInstruction = false;
   const recentAppointments = new Map<
     string,
     { timestamp: number; result: BookingCreateAppointmentOutput }
@@ -417,6 +422,46 @@ wss.on("connection", (twilioWs) => {
     }
   };
 
+  const getResponseIdFromMessage = (message: any) => {
+    if (!message) return null;
+    if (typeof message.response?.id === "string") return message.response.id;
+    if (typeof message.response_id === "string") return message.response_id;
+    if (typeof message.responseId === "string") return message.responseId;
+    if (typeof message.id === "string" && typeof message.type === "string") return message.id;
+    return null;
+  };
+
+  const sendResponseCreate = (options: { instructions: string; reason: string }) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    if (activeResponseInFlight) {
+      console.log("⏭️ response.create skipped (active response in flight)", {
+        reason: options.reason,
+        callSid,
+        streamSid,
+        activeResponseId,
+      });
+      return false;
+    }
+    activeResponseInFlight = true;
+    activeResponseId = activeResponseId ?? "pending";
+    console.log("➡️ response.create sent", {
+      reason: options.reason,
+      callSid,
+      streamSid,
+      activeResponseId,
+    });
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions: options.instructions,
+        },
+      })
+    );
+    return true;
+  };
+
   const sendGreeting = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       pendingGreeting = true;
@@ -428,16 +473,7 @@ wss.on("connection", (twilioWs) => {
       mode === "spanish_coach"
         ? "Start the Spanish coaching call now by saying: \"Hola {nombre}, ¿cómo estás?\" Use the learner's name if known; if you don't know it, ask and then use it. Wait for their response before asking the first simple question."
         : "Answer the phone in English with a warm greeting in one short sentence and ask how you can help.";
-
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions,
-        },
-      })
-    );
+    sendResponseCreate({ instructions, reason: "greeting" });
   };
 
   const noteAssistantText = (text: string) => {
@@ -516,31 +552,37 @@ wss.on("connection", (twilioWs) => {
 
   const sendCalendarFiller = (toolName: string, toolCallId: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (promptHasCalendarFillerInstruction) {
+      console.log("🛑 server calendar filler suppressed (prompt already instructs filler)", {
+        toolName,
+        toolCallId,
+      });
+      return;
+    }
+    if (activeResponseInFlight) {
+      console.log("⏭️ calendar filler skipped (active response in flight)", {
+        toolName,
+        toolCallId,
+        callSid,
+        streamSid,
+        activeResponseId,
+      });
+      return;
+    }
     const fillerSentence = "One moment while I check the calendar.";
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions: `Say exactly this one short sentence to the caller: "${fillerSentence}"`,
-        },
-      })
-    );
-    console.log("🗣️ calendar filler emitted before tool call", { toolName, toolCallId });
+    const sent = sendResponseCreate({
+      instructions: `Say exactly this one short sentence to the caller: "${fillerSentence}"`,
+      reason: "calendar-filler",
+    });
+    if (sent) {
+      console.log("🗣️ calendar filler emitted before tool call", { toolName, toolCallId });
+    }
   };
 
   const sendBookingFailureResponse = (options: { reason: string }) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     const instructions = `Tell the caller: "${options.reason}" Keep it short and offer to take a message or have someone follow up.`;
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions,
-        },
-      })
-    );
+    sendResponseCreate({ instructions, reason: "booking-failure" });
   };
 
   const sendBookingFailureNotice = (result: BookingCreateAppointmentOutput) => {
@@ -842,82 +884,132 @@ wss.on("connection", (twilioWs) => {
             instructions = `${spanishCoachPrompt}\n\nUser call focus:\n${user.call_instructions}`;
           }
         }
+        promptHasCalendarFillerInstruction = instructions.includes(
+          "Before calling booking_check_availability"
+        );
         openaiWs = connectOpenAIRealtime({ instructions });
 
-        openaiWs.on("open", () => {
-          if (pendingGreeting) {
-            sendGreeting();
-          }
-        });
+        if (!openaiListenersAttached) {
+          openaiListenersAttached = true;
+          openaiWs.on("open", () => {
+            if (pendingGreeting) {
+              sendGreeting();
+            }
+          });
 
-        // --- OpenAI -> Twilio ---
-        openaiWs.on("message", (openaiData) => {
-          const openaiMsg = safeJsonParse(openaiData);
-          if (!openaiMsg) return;
+          // --- OpenAI -> Twilio ---
+          openaiWs.on("message", (openaiData) => {
+            const openaiMsg = safeJsonParse(openaiData);
+            if (!openaiMsg) return;
 
-          if (
-            openaiMsg.type === "session.created" ||
-            openaiMsg.type === "session.updated" ||
-            openaiMsg.type === "response.created" ||
-            openaiMsg.type === "response.done" ||
-            openaiMsg.type === "error"
-          ) {
-            console.log("OpenAI event:", openaiMsg.type);
-            if (openaiMsg.type === "error") console.log("OpenAI error:", openaiMsg.error);
-          }
+            if (
+              openaiMsg.type === "session.created" ||
+              openaiMsg.type === "session.updated" ||
+              openaiMsg.type === "response.created" ||
+              openaiMsg.type === "response.done" ||
+              openaiMsg.type === "error"
+            ) {
+              console.log("OpenAI event:", openaiMsg.type);
+              if (openaiMsg.type === "error") console.log("OpenAI error:", openaiMsg.error);
+            }
 
-          if (!conversationId) {
-            conversationId =
-              (typeof openaiMsg.conversation_id === "string"
-                ? openaiMsg.conversation_id
-                : typeof openaiMsg.conversationId === "string"
-                  ? openaiMsg.conversationId
-                  : null) ?? conversationId;
-          }
+            if (openaiMsg.type === "response.created") {
+              const responseId = getResponseIdFromMessage(openaiMsg);
+              activeResponseId = responseId ?? activeResponseId ?? "pending";
+              activeResponseInFlight = true;
+              console.log("🧭 response created", {
+                callSid,
+                streamSid,
+                activeResponseId,
+              });
+            }
 
-          const toolCall = extractToolCall(openaiMsg);
-          if (toolCall) {
-            handleToolCall(toolCall).catch((error) => console.log("Tool handler error:", error));
-          }
+            if (openaiMsg.type === "response.done") {
+              const responseId = getResponseIdFromMessage(openaiMsg);
+              const shouldClear =
+                !activeResponseId ||
+                activeResponseId === "pending" ||
+                !responseId ||
+                responseId === activeResponseId;
+              if (shouldClear) {
+                activeResponseId = null;
+                activeResponseInFlight = false;
+              }
+              console.log("🧭 response done", {
+                callSid,
+                streamSid,
+                responseId,
+                cleared: shouldClear,
+              });
+            }
 
-          if (
-            (openaiMsg.type === "response.audio.delta" ||
-              openaiMsg.type === "output_audio_buffer.delta") &&
-            streamSid
-          ) {
-            const payloadBase64 = openaiMsg.delta;
+            if (!conversationId) {
+              conversationId =
+                (typeof openaiMsg.conversation_id === "string"
+                  ? openaiMsg.conversation_id
+                  : typeof openaiMsg.conversationId === "string"
+                    ? openaiMsg.conversationId
+                    : null) ?? conversationId;
+            }
 
-            if (twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(
-                JSON.stringify({
-                  event: "media",
-                  streamSid,
-                  media: { payload: payloadBase64 },
-                })
+            const toolCall = extractToolCall(openaiMsg);
+            if (toolCall) {
+              const alreadyHandled = handledToolCallIds.has(toolCall.callId);
+              console.log("🧰 tool call detected", {
+                toolCallId: toolCall.callId,
+                toolName: toolCall.name,
+                deduped: alreadyHandled,
+              });
+              if (alreadyHandled) return;
+              handledToolCallIds.add(toolCall.callId);
+              handleToolCall(toolCall).catch((error) =>
+                console.log("Tool handler error:", error)
               );
             }
-          }
 
-          if (openaiMsg.type === "response.text.delta") {
-            noteAssistantText(openaiMsg.delta);
-            process.stdout.write(openaiMsg.delta);
-          }
+            if (
+              (openaiMsg.type === "response.audio.delta" ||
+                openaiMsg.type === "output_audio_buffer.delta") &&
+              streamSid
+            ) {
+              const payloadBase64 = openaiMsg.delta;
 
-          if (openaiMsg.type === "response.text.done") {
-            finalizeAssistantText();
-            process.stdout.write("\n");
-          }
-
-          const transcript = extractTranscript(openaiMsg);
-          if (transcript) {
-            if (mode === "spanish_coach") {
-              handleTranscript(transcript);
+              if (twilioWs.readyState === WebSocket.OPEN) {
+                twilioWs.send(
+                  JSON.stringify({
+                    event: "media",
+                    streamSid,
+                    media: { payload: payloadBase64 },
+                  })
+                );
+              }
             }
-          }
-        });
 
-        openaiWs.on("close", () => console.log("OpenAI Realtime disconnected"));
-        openaiWs.on("error", (err) => console.log("OpenAI WS error:", err));
+            if (openaiMsg.type === "response.text.delta") {
+              noteAssistantText(openaiMsg.delta);
+              process.stdout.write(openaiMsg.delta);
+            }
+
+            if (openaiMsg.type === "response.text.done") {
+              finalizeAssistantText();
+              process.stdout.write("\n");
+            }
+
+            const transcript = extractTranscript(openaiMsg);
+            if (transcript) {
+              if (mode === "spanish_coach") {
+                handleTranscript(transcript);
+              }
+            }
+          });
+
+          openaiWs.on("close", () => {
+            activeResponseId = null;
+            activeResponseInFlight = false;
+            console.log("OpenAI Realtime disconnected");
+          });
+          openaiWs.on("error", (err) => console.log("OpenAI WS error:", err));
+        }
       }
 
       // ✅ Force assistant to greet immediately (so caller doesn't have to speak first)
