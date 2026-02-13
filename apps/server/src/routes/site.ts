@@ -11,7 +11,14 @@ function buildHomepageHtml() {
     : "Call or text us to get started.";
   const contactEmail = "jaredjlg2@gmail.com";
   const publicUrl = env.PUBLIC_BASE_URL ?? "";
-  const canonicalUrl = publicUrl ? `${publicUrl.replace(/\/$/, "")}/` : "/";
+  const normalizedPublicUrl = publicUrl.replace(/\/$/, "");
+  const canonicalUrl = normalizedPublicUrl ? `${normalizedPublicUrl}/` : "/";
+  const privacyUrl = normalizedPublicUrl
+    ? `${normalizedPublicUrl}/privacy_policy`
+    : "/privacy_policy";
+  const termsUrl = normalizedPublicUrl
+    ? `${normalizedPublicUrl}/terms_and_conditions`
+    : "/terms_and_conditions";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -563,6 +570,11 @@ What neighborhoods do you service?"
 
       <footer>
         <p>Questions? Reach us at ${contactEmail}.</p>
+        <p>
+          <a href="${privacyUrl}">Privacy Policy</a>
+          &nbsp;•&nbsp;
+          <a href="${termsUrl}">Terms &amp; Conditions</a>
+        </p>
       </footer>
     </main>
     <script>
@@ -668,8 +680,148 @@ What neighborhoods do you service?"
 </html>`;
 }
 
+function buildPrivacyPolicyHtml() {
+  const businessName = env.BUSINESS_NAME ?? "BookedSolid";
+  const publicUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+  const canonicalUrl = publicUrl ? `${publicUrl}/privacy_policy` : "/privacy_policy";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${businessName} Privacy Policy</title>
+    <meta
+      name="description"
+      content="Privacy Policy for ${businessName} voice assistant and booking services."
+    />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <style>
+      body { font-family: Inter, Segoe UI, system-ui, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+      main { max-width: 900px; margin: 0 auto; padding: 28px 20px 56px; }
+      h1 { margin-bottom: 8px; }
+      .muted { color: #475569; }
+      section { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px; margin-top: 14px; }
+      a { color: #1d4ed8; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a href="/">← Back to home</a></p>
+      <h1>Privacy Policy</h1>
+      <p class="muted">Last updated: October 17, 2026</p>
+
+      <section>
+        <h2>1. Information We Collect</h2>
+        <p>We collect contact details you provide (name and phone number), call metadata, and booking details needed to deliver receptionist and appointment services.</p>
+      </section>
+
+      <section>
+        <h2>2. How We Use Information</h2>
+        <p>We use your information to answer calls, schedule appointments, send confirmations, and improve service reliability and quality.</p>
+      </section>
+
+      <section>
+        <h2>3. Communications</h2>
+        <p>When enabled, we may send SMS follow-ups related to your inquiry or booking. Message and data rates may apply depending on your carrier.</p>
+      </section>
+
+      <section>
+        <h2>4. Data Sharing</h2>
+        <p>We share data only with service providers required to operate the platform (such as telephony, calendar, and hosting providers), or when required by law.</p>
+      </section>
+
+      <section>
+        <h2>5. Data Retention and Security</h2>
+        <p>We retain data for as long as needed to provide services, maintain business records, and comply with legal obligations. We apply reasonable safeguards to protect stored information.</p>
+      </section>
+
+      <section>
+        <h2>6. Your Choices</h2>
+        <p>You can request updates or deletion of your data by contacting us at <a href="mailto:jaredjlg2@gmail.com">jaredjlg2@gmail.com</a>.</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
+function buildTermsAndConditionsHtml() {
+  const businessName = env.BUSINESS_NAME ?? "BookedSolid";
+  const publicUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+  const canonicalUrl = publicUrl
+    ? `${publicUrl}/terms_and_conditions`
+    : "/terms_and_conditions";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${businessName} Terms and Conditions</title>
+    <meta
+      name="description"
+      content="Terms and Conditions for using ${businessName} services."
+    />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <style>
+      body { font-family: Inter, Segoe UI, system-ui, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+      main { max-width: 900px; margin: 0 auto; padding: 28px 20px 56px; }
+      h1 { margin-bottom: 8px; }
+      .muted { color: #475569; }
+      section { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px; margin-top: 14px; }
+      a { color: #1d4ed8; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a href="/">← Back to home</a></p>
+      <h1>Terms and Conditions</h1>
+      <p class="muted">Last updated: October 17, 2026</p>
+
+      <section>
+        <h2>1. Acceptance of Terms</h2>
+        <p>By using ${businessName}, you agree to these terms and all applicable laws.</p>
+      </section>
+
+      <section>
+        <h2>2. Service Scope</h2>
+        <p>${businessName} provides automated call handling, appointment scheduling, and related messaging features. Availability may vary and service may be modified over time.</p>
+      </section>
+
+      <section>
+        <h2>3. User Responsibilities</h2>
+        <p>You agree to provide accurate information and not use the service for unlawful, abusive, or fraudulent purposes.</p>
+      </section>
+
+      <section>
+        <h2>4. Fees and Messaging</h2>
+        <p>Standard phone and messaging carrier charges may apply. Any additional service fees will be communicated before they are charged.</p>
+      </section>
+
+      <section>
+        <h2>5. Disclaimer and Limitation of Liability</h2>
+        <p>The service is provided "as is" without warranties of uninterrupted availability. To the fullest extent allowed by law, ${businessName} is not liable for indirect or consequential damages.</p>
+      </section>
+
+      <section>
+        <h2>6. Contact</h2>
+        <p>For terms questions, email <a href="mailto:jaredjlg2@gmail.com">jaredjlg2@gmail.com</a>.</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 siteRouter.get("/", (_req, res) => {
   res.status(200).type("html").send(buildHomepageHtml());
+});
+
+siteRouter.get("/privacy_policy", (_req, res) => {
+  res.status(200).type("html").send(buildPrivacyPolicyHtml());
+});
+
+siteRouter.get("/terms_and_conditions", (_req, res) => {
+  res.status(200).type("html").send(buildTermsAndConditionsHtml());
 });
 
 export { siteRouter };
