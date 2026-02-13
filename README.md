@@ -97,6 +97,18 @@ SEND_SUMMARY_TO_CALLER=false
 - `GET /coach/users` — list users (requires `x-coach-admin-key`).
 - `POST /coach/run` — manual call trigger (requires `x-coach-admin-key`).
 
+### Legal pages
+
+The server now serves hosted legal pages for compliance links:
+
+- Privacy Policy: `GET /privacy_policy`
+- Terms and Conditions: `GET /terms_and_conditions`
+
+If your Render base URL is `https://bookedsolid-server.onrender.com`, the full URLs are:
+
+- `https://bookedsolid-server.onrender.com/privacy_policy`
+- `https://bookedsolid-server.onrender.com/terms_and_conditions`
+
 ### Twilio webhooks
 
 Configure Twilio voice webhooks to the server:
